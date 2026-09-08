@@ -2,6 +2,7 @@
 #include "include/keyboard.h"
 #include "include/heap.h"
 #include "include/sched.h"
+#include "include/idt.h"
 
 // print rows/columns
 int char_raw = 0;
@@ -84,6 +85,11 @@ void new_line(){
     }
 }
 
+void disable_cursor(void){
+    outb(0x3D4, 0x0A);
+    outb(0x3D5, 0x20);
+}
+
 void clear(){
     char* vga = (char*)video_mem;
     for(int i = 0; i < screen_width * screen_height * 2; i += 2){
@@ -92,6 +98,7 @@ void clear(){
     }
     char_raw = 0;
     char_column = 0;
+    disable_cursor();
 }
 
 static int strings_equal(const char *left, const char *right){

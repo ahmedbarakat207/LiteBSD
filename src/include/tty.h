@@ -35,6 +35,8 @@ void new_line();
 
 void clear();
 
+void disable_cursor(void);
+
 void shell();
 
 void err(const char* msg);
