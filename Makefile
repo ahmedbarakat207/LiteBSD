@@ -11,9 +11,43 @@ CFLAGS := -std=gnu11 -ffreestanding -O2 -Wall -Wextra -m32 \
 	-fno-pie -fno-stack-protector -fno-builtin
 LDFLAGS := -m elf_i386 -T linker.ld
 
-.PHONY: all clean iso
+.PHONY: all clean iso libc busybox initrd run
 
-all: $(BUILD_DIR)/$(TARGET)
+all: $(BUILD_DIR)/$(TARGET) busybox initrd
+
+libc:
+	@if [ ! -f libc/Makefile ]; then \
+		echo "Initializing libc submodule..."; \
+		git submodule update --init libc; \
+	fi
+	$(MAKE) -C libc
+
+busybox: libc
+	@if [ ! -f busybox/Makefile ]; then \
+		echo "Initializing busybox submodule..."; \
+		git submodule update --init busybox; \
+	fi
+	@if [ ! -f busybox/.config ]; then \
+		echo "Configuring busybox..."; \
+		cp busybox.config busybox/.config; \
+	fi
+	@if ! grep -q "APPLET_NOFORK(cat" busybox/coreutils/cat.c 2>/dev/null; then \
+		echo "Patching busybox for LiteBSD..."; \
+		git -C busybox apply ../busybox.patch || patch -p1 -d busybox < busybox.patch; \
+	fi
+	$(MAKE) -C busybox -j4 ARCH=i386 CROSS_COMPILE=i686-elf-
+
+initrd: busybox | $(BUILD_DIR)
+	mkdir -p $(BUILD_DIR)/initrd/bin $(BUILD_DIR)/initrd/etc $(BUILD_DIR)/initrd/usr/bin
+	cp busybox/busybox $(BUILD_DIR)/initrd/bin/busybox
+	cp busybox/busybox $(BUILD_DIR)/initrd/bin/sh
+	echo "root:x:0:0:root:/root:/bin/sh" > $(BUILD_DIR)/initrd/etc/passwd
+	echo "root:x:0:" > $(BUILD_DIR)/initrd/etc/group
+	echo "Hello from LiteBSD running upstream BusyBox!" > $(BUILD_DIR)/initrd/readme.txt
+	cd $(BUILD_DIR)/initrd && tar -cf ../initrd.tar --format=ustar .
+
+run: all
+	qemu-system-i386 -m 512M -kernel $(BUILD_DIR)/$(TARGET) -initrd $(BUILD_DIR)/initrd.tar
 
 $(BUILD_DIR):
 	mkdir -p $@

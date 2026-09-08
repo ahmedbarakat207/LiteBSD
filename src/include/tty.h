@@ -32,6 +32,10 @@ void print(const char* str, char color);
 
 void println(const char* str, char color);
 
+void print_hex(unsigned int val, char color);
+
+void print_dec(unsigned int val, char color);
+
 void new_line();
 
 void clear();

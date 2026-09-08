@@ -54,7 +54,7 @@ task_t *scheduler_current_task(void);
 int scheduler_user_range_valid(const void *ptr, uint32_t length);
 task_t *find_task(uint32_t pid);
 int fork_task(struct interrupt_frame *frame);
-int wait4(int pid, int *status);
+int wait4(int pid, int *status, int options);
 void task_exit(int status);
 int alloc_fd(task_t *task, struct file *f);
 void release_fd(task_t *task, int fd);

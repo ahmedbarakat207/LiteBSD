@@ -24,7 +24,7 @@ struct idt_entry idt[256];
 struct idt_ptr idtp;
 
 // tbh i don't why in the actual fuck this thing is here but the code won't want to compile without it so idc
-void isr_handler(void);
+void isr_handler(struct interrupt_frame *frame);
 struct interrupt_frame *irq_handler(unsigned int irq_num, struct interrupt_frame *frame);
 
 void idt_set_gate(unsigned char num, unsigned long base, unsigned short sel, unsigned char flags){
@@ -81,8 +81,25 @@ static inline unsigned char inb(unsigned short port) {
     return ret;
 }
 
-void isr_handler(){
-    err("CPU Exception occurred.");
+void isr_handler(struct interrupt_frame *frame){
+    print("[ERR] CPU Exception ", VGA_COLOR_RED);
+    print_dec(frame->interrupt_number, VGA_COLOR_LIGHT_RED);
+    print(" err=", VGA_COLOR_WHITE);
+    print_hex(frame->error_code, VGA_COLOR_LIGHT_CYAN);
+    print(" eip=", VGA_COLOR_WHITE);
+    print_hex(frame->eip, VGA_COLOR_LIGHT_CYAN);
+    print(" cs=", VGA_COLOR_WHITE);
+    print_hex(frame->cs, VGA_COLOR_LIGHT_CYAN);
+    if (frame->interrupt_number == 14) {
+        unsigned int cr2;
+        asm volatile("mov %%cr2, %0" : "=r"(cr2));
+        print(" cr2=", VGA_COLOR_WHITE);
+        print_hex(cr2, VGA_COLOR_LIGHT_CYAN);
+    }
+    new_line();
+    while (1) {
+        asm volatile("cli; hlt");
+    }
 }
 
 struct interrupt_frame *isr_common_handler(void *raw_frame) {
@@ -92,7 +109,7 @@ struct interrupt_frame *isr_common_handler(void *raw_frame) {
     } else if (frame->interrupt_number >= 32 && frame->interrupt_number < 48) {
         return irq_handler(frame->interrupt_number - 32, frame);
     } else if (frame->interrupt_number < 32) {
-        isr_handler();
+        isr_handler(frame);
     }
     return frame;
 }

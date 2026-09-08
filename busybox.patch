@@ -1,0 +1,66 @@
+diff --git a/Makefile b/Makefile
+index fa8cb76..e9116b4 100644
+--- a/Makefile
++++ b/Makefile
+@@ -612,7 +612,7 @@ quiet_cmd_busybox__ ?= LINK    $@
+       "$(core-y)" \
+       "$(libs-y)" \
+       "$(LDLIBS)" \
+-      "$(CONFIG_EXTRA_LDLIBS)" \
++      "$(subst \",,$(CONFIG_EXTRA_LDLIBS))" \
+       && $(srctree)/scripts/generate_BUFSIZ.sh --post include/common_bufsiz.h
+ 
+ # Generate System.map
+diff --git a/Makefile.flags b/Makefile.flags
+index 1cec5ba..303dfae 100644
+--- a/Makefile.flags
++++ b/Makefile.flags
+@@ -146,7 +146,7 @@ export SYSROOT=$(CONFIG_SYSROOT)
+ endif
+ 
+ # libm may be needed for dc, awk, ntpd
+-LDLIBS += m
++# LDLIBS += m
+ # Android has no separate crypt library
+ # gcc-4.2.1 fails if we try to feed C source on stdin:
+ #  echo 'int main(void){return 0;}' | $(CC) $(CFLAGS) -lcrypt -o /dev/null -xc -
+diff --git a/coreutils/cat.c b/coreutils/cat.c
+index 4b34149..e7d2ac2 100644
+--- a/coreutils/cat.c
++++ b/coreutils/cat.c
+@@ -27,7 +27,7 @@
+ //config:	help
+ //config:	Display nonprinting characters as escape sequences
+ 
+-//applet:IF_CAT(APPLET(cat, BB_DIR_BIN, BB_SUID_DROP))
++//applet:IF_CAT(APPLET_NOFORK(cat, cat, BB_DIR_BIN, BB_SUID_DROP, cat))
+ 
+ //kbuild:lib-$(CONFIG_CAT) += cat.o
+ 
+diff --git a/coreutils/ls.c b/coreutils/ls.c
+index b69b804..6b6dd0a 100644
+--- a/coreutils/ls.c
++++ b/coreutils/ls.c
+@@ -92,7 +92,7 @@
+ //config:	configurable, and the output may not be legible on
+ //config:	many output screens.
+ 
+-//applet:IF_LS(APPLET_NOEXEC(ls, ls, BB_DIR_BIN, BB_SUID_DROP, ls))
++//applet:IF_LS(APPLET_NOFORK(ls, ls, BB_DIR_BIN, BB_SUID_DROP, ls))
+ 
+ //kbuild:lib-$(CONFIG_LS) += ls.o
+ 
+diff --git a/scripts/trylink b/scripts/trylink
+index 2255dee..8b846e7 100755
+--- a/scripts/trylink
++++ b/scripts/trylink
+@@ -84,7 +84,8 @@ A_FILES="$6"
+ # a real utmp library in LDLIBS, dropping it "works" but resulting binary
+ # does not work properly).
+ LDLIBS="$7"
+-CONFIG_EXTRA_LDLIBS="$8"
++shift 7
++CONFIG_EXTRA_LDLIBS="$*"
+ 
+ # The --sort-section option is not supported by older versions of ld
+ SORT_SECTION="-Wl,--sort-section,alignment"

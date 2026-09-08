@@ -1,0 +1,7 @@
+[submodule "libc"]
+	path = libc
+	url = https://github.com/ahmedbarakat207/c-lite
+[submodule "busybox"]
+	path = busybox
+	url = https://github.com/mirror/busybox.git
+	ignore = dirty

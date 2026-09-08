@@ -91,9 +91,9 @@ static int syscall_string_valid(uint32_t address){
 
 static int sys_write(uint32_t fd, uint32_t buffer, uint32_t count){
     if (buffer == 0 || !syscall_range_valid(buffer, count)) return -1;
-    if (fd == 1 || fd == 2) { // only stdout
+    if (fd == 1 || fd == 2) { // stdout and stderr
         const char *buf = (const char *)buffer;
-        for (uint32_t i = 0; i < count && buf[i]; i++) {
+        for (uint32_t i = 0; i < count; i++) {
             print_char(buf[i], VGA_COLOR_WHITE);
         }
         return count;
@@ -139,6 +139,7 @@ static int sys_read(uint32_t fd, uint32_t buffer, uint32_t count){
             char c = getchar();
             if (c == '\n') {
                 buf[i++] = '\n';
+                print_char('\n', VGA_COLOR_WHITE);
                 break;
             } else if (c == '\b') {
                 if (i > 0) {
@@ -219,13 +220,25 @@ static int sys_execve(uint32_t path, uint32_t argv, uint32_t envp){
 }
 
 static int sys_execve_impl(struct interrupt_frame *frame, uint32_t path) {
+    print("[EXECVE] Executing: ", VGA_COLOR_LIGHT_GREEN);
+    println((const char*)path, VGA_COLOR_LIGHT_GREEN);
+
     struct vfs_node *node = vfs_open((const char*)path, 0);
-    if (!node) return -1;
+    if (!node) {
+        println("[EXECVE] vfs_open failed!", VGA_COLOR_RED);
+        return -1;
+    }
 
     unsigned char header[52];
-    if (vfs_read(node, 0, header, 52) != 52) { vfs_close(node); return -1; }
+    if (vfs_read(node, 0, header, 52) != 52) {
+        println("[EXECVE] Failed to read header", VGA_COLOR_RED);
+        vfs_close(node);
+        return -1;
+    }
     if (header[0] != 0x7F || header[1] != 'E' || header[2] != 'L' || header[3] != 'F') {
-        vfs_close(node); return -1;
+        println("[EXECVE] Not an ELF binary", VGA_COLOR_RED);
+        vfs_close(node);
+        return -1;
     }
 
     uint32_t entry = *(uint32_t*)&header[24];
@@ -267,7 +280,8 @@ static int sys_execve_impl(struct interrupt_frame *frame, uint32_t path) {
     vfs_close(node);
     uint32_t *stack = (uint32_t*)kmalloc(16384);
     if (!stack) return -1;
-    uint32_t stack_top = (uint32_t)stack + 16384;
+    for (int i = 0; i < 16384 / 4; i++) stack[i] = 0;
+    uint32_t stack_top = (uint32_t)stack + 16384 - 64;
     stack_top &= ~0x0F;
 
     task_t *task = scheduler_current_task();
@@ -282,10 +296,9 @@ static int sys_execve_impl(struct interrupt_frame *frame, uint32_t path) {
 
     return 0;
 }
-static int sys_wait4(uint32_t pid, uint32_t status, uint32_t unused1){
-    (void)unused1;
+static int sys_wait4(uint32_t pid, uint32_t status, uint32_t options){
     if (status && !syscall_range_valid(status, sizeof(int))) return -1;
-    return wait4((int)pid, (int*)status);
+    return wait4((int)pid, (int*)status, (int)options);
 }
 
 static int sys_getppid(uint32_t unused1, uint32_t unused2, uint32_t unused3){

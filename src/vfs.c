@@ -36,7 +36,9 @@ static int string_length(const char *value){
 
 // where is the nu.. i mean nodes nodes yea!????
 static struct vfs_node *find_node(const char *path){
-    if (strings_equal(path, "/")) return &root;
+    if (!path) return NULL;
+    if (strings_equal(path, "/") || strings_equal(path, ".")) return &root;
+    if (path[0] == '.' && path[1] == '/') path++;
     struct vfs_node *node = nodes;
     while (node) {
         if (strings_equal(node->path, path)) return node;
@@ -46,7 +48,10 @@ static struct vfs_node *find_node(const char *path){
 }
 
 struct vfs_node *vfs_open(const char *path, int flags){
-    if (!path || path[0] != '/') return NULL;
+    if (!path) return NULL;
+    if (strings_equal(path, ".")) path = "/";
+    if (path[0] == '.' && path[1] == '/') path++;
+    if (path[0] != '/') return NULL;
     struct vfs_node *node = find_node(path);
     if (node) {
         node->refs++;

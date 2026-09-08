@@ -167,10 +167,10 @@ int create_user_task(void (*entry)(void)) {
     task->cwd[0] = '/';
     task->cwd[1] = '\0';
     {
-        unsigned int user_heap = (unsigned int)kmalloc(0x10000);
+        unsigned int user_heap = (unsigned int)kmalloc(0x100000);
         task->heap_start = user_heap;
         task->heap_brk = user_heap;
-        task->heap_end = user_heap + 0x10000;
+        task->heap_end = user_heap + 0x100000;
     }
 
     add_task(task);
@@ -233,10 +233,24 @@ int scheduler_user_range_valid(const void *ptr, uint32_t length){
     uint32_t start = (uint32_t)ptr;
     uint32_t end = start + length;
     if (end < start) return 0;
-    if (start >= current_task->heap_start && end <= current_task->heap_end) return 1;
-    uint32_t stack_start = (uint32_t)current_task->user_stack_base;
-    uint32_t stack_end = stack_start + 4096;
-    return start >= stack_start && end <= stack_end;
+
+    // userspace code, data, bss (0x07000000 .. 0x09000000)
+    if (start >= 0x07000000 && end <= 0x09000000) return 1;
+
+    // user heap
+    if (current_task->heap_start && start >= current_task->heap_start && end <= current_task->heap_end) return 1;
+
+    // user stack
+    if (current_task->user_stack_base) {
+        uint32_t stack_start = (uint32_t)current_task->user_stack_base;
+        uint32_t stack_end = stack_start + 65536;
+        if (start >= stack_start && end <= stack_end) return 1;
+    }
+
+    // kernel/boot rodata
+    if (start < 0x1000000) return 1;
+
+    return 0;
 }
 
 task_t *find_task(uint32_t pid){
@@ -250,7 +264,7 @@ task_t *find_task(uint32_t pid){
 }
 
 int alloc_fd(task_t *task, struct file *f){
-    for (int i = 0; i < MAX_FDS; i++){
+    for (int i = 3; i < MAX_FDS; i++){
         if (!task->fds[i]){
             task->fds[i] = f;
             return i;
@@ -312,13 +326,15 @@ int fork_task(struct interrupt_frame *frame){
     task->exit_code = 0;
 
     if (current_task->user_stack_base) {
-        task->user_stack_base = kmalloc(4096);
+        uint32_t stack_size = current_task->user_stack_top - (uint32_t)current_task->user_stack_base;
+        if (stack_size == 0 || stack_size > 65536) stack_size = 16384;
+        task->user_stack_base = kmalloc(stack_size);
         if (!task->user_stack_base) {
             kfree(stack);
             kfree(task);
             return -1;
         }
-        for (unsigned int i = 0; i < 4096; i++) {
+        for (unsigned int i = 0; i < stack_size; i++) {
             ((char*)task->user_stack_base)[i] = ((char*)current_task->user_stack_base)[i];
         }
         uint32_t stack_delta = (uint32_t)task->user_stack_base - (uint32_t)current_task->user_stack_base;
@@ -357,7 +373,7 @@ int fork_task(struct interrupt_frame *frame){
     return (int)task->pid;
 }
 
-int wait4(int pid, int *status){
+int wait4(int pid, int *status, int options){
     while (1){
         task_t *found = NULL;
         int has_child = 0;
@@ -385,6 +401,9 @@ int wait4(int pid, int *status){
             if (found->user_stack_base) kfree(found->user_stack_base);
             kfree(found);
             return child_pid;
+        }
+        if (options & 1) { // WNOHANG
+            return 0;
         }
         return -2;
     }

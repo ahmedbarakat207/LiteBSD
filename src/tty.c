@@ -40,6 +40,11 @@ void print_char(char c, char color) {
         }
         return;
     }
+    // carriage return
+    if (c == '\r') {
+        char_column = 0;
+        return;
+    }
     // new line
     if (c == '\n') {
         char_column = 0;
@@ -75,6 +80,34 @@ void print(const char* str, char color){
 void println(const char* str, char color){
     print(str, color);
     new_line();
+}
+
+void print_hex(unsigned int val, char color) {
+    print("0x", color);
+    char buf[9];
+    const char hex_chars[] = "0123456789abcdef";
+    for (int i = 7; i >= 0; i--) {
+        buf[i] = hex_chars[val & 0xF];
+        val >>= 4;
+    }
+    buf[8] = '\0';
+    print(buf, color);
+}
+
+void print_dec(unsigned int val, char color) {
+    if (val == 0) {
+        print_char('0', color);
+        return;
+    }
+    char buf[12];
+    int idx = 0;
+    while (val > 0) {
+        buf[idx++] = '0' + (val % 10);
+        val /= 10;
+    }
+    for (int i = idx - 1; i >= 0; i--) {
+        print_char(buf[i], color);
+    }
 }
 
 void new_line(){

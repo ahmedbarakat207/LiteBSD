@@ -10,19 +10,16 @@
 #include "include/multiboot.h"
 
 static void user_init(void){
-    char message[] = "userspace: parent\n";
-    int child = syscall_fork();
-    if (child == 0) {
-        char child_message[] = "userspace: child\n";
-        syscall_write(child_message, sizeof(child_message) - 1);
-        syscall_exit(7);
-    }
-    if (child > 0) {
-        int status = 0;
-        syscall_wait4(child, &status);
-        syscall_write(message, sizeof(message) - 1);
-    }
-    syscall_exit(0);
+    println("[USER_INIT] Starting user_init...", VGA_COLOR_LIGHT_CYAN);
+    char *argv[] = { "/bin/sh", NULL };
+    syscall_execve("/bin/sh", argv, NULL);
+
+    char *bb_argv[] = { "/bin/busybox", "sh", NULL };
+    syscall_execve("/bin/busybox", bb_argv, NULL);
+
+    char err_msg[] = "[INIT] Failed to exec /bin/sh or /bin/busybox\n";
+    syscall_write(err_msg, sizeof(err_msg) - 1);
+    syscall_exit(1);
 }
 
 void kernel_main(struct mb_info *info){
