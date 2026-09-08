@@ -133,19 +133,36 @@ void initrd_load(uint32_t start, uint32_t end) {
                     println(path, VGA_COLOR_RED);
                 }
             } else if (type == '1' || type == '2') {
-                char parent_dir[256];
-                size_t p_len = 0;
-                while (path[p_len]) {
-                    parent_dir[p_len] = path[p_len];
-                    p_len++;
-                }
-                parent_dir[p_len] = '\0';
-                while (p_len > 1 && parent_dir[p_len - 1] != '/') p_len--;
-                if (p_len > 1 && parent_dir[p_len - 1] == '/') p_len--;
-                parent_dir[p_len] = '\0';
-
+                /* In ustar, hardlink targets are relative to archive root, not the link file.
+                 * Strip leading "./" and treat as absolute path. */
+                const char *lname = header->linkname;
                 char target_path[256];
-                vfs_resolve_path(parent_dir, header->linkname, target_path, sizeof(target_path));
+                if (lname[0] == '.' && lname[1] == '/') {
+                    /* strip "./" prefix */
+                    target_path[0] = '/';
+                    size_t li = 0;
+                    while (lname[2 + li] && li < sizeof(target_path) - 2) {
+                        target_path[1 + li] = lname[2 + li];
+                        li++;
+                    }
+                    target_path[1 + li] = '\0';
+                } else if (lname[0] != '/') {
+                    target_path[0] = '/';
+                    size_t li = 0;
+                    while (lname[li] && li < sizeof(target_path) - 2) {
+                        target_path[1 + li] = lname[li];
+                        li++;
+                    }
+                    target_path[1 + li] = '\0';
+                } else {
+                    size_t li = 0;
+                    while (lname[li] && li < sizeof(target_path) - 1) {
+                        target_path[li] = lname[li];
+                        li++;
+                    }
+                    target_path[li] = '\0';
+                }
+
                 struct vfs_node *target = vfs_find_node(target_path);
                 struct vfs_node *node = target ? vfs_open(path, 0x40 | 0x02) : NULL;
                 if (target && node) {
@@ -162,6 +179,9 @@ void initrd_load(uint32_t start, uint32_t end) {
                     files_loaded++;
                     print("[INITRD] Linked file: ", VGA_COLOR_WHITE);
                     println(path, VGA_COLOR_WHITE);
+                } else {
+                    print("[INITRD] Link target not found: ", VGA_COLOR_YELLOW);
+                    println(target_path, VGA_COLOR_YELLOW);
                 }
             }
         }
