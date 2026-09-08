@@ -143,7 +143,7 @@ void shell(){
 }
 
 void err(const char* msg){
-    println("[ERR] Kernel Panic: ", VGA_COLOR_RED);
+    print("[ERR] Kernel Panic: ", VGA_COLOR_RED);
     println(msg, VGA_COLOR_RED);
     while(1){
         asm volatile("hlt");
