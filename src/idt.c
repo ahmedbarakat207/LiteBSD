@@ -88,8 +88,7 @@ void isr_handler(){
 struct interrupt_frame *isr_common_handler(void *raw_frame) {
     struct interrupt_frame *frame = (struct interrupt_frame*)raw_frame;
     if (frame->interrupt_number == 0x80) {
-        syscall_handler(frame);
-        return frame; // return same frame
+        return syscall_handler(frame);
     } else if (frame->interrupt_number >= 32 && frame->interrupt_number < 48) {
         return irq_handler(frame->interrupt_number - 32, frame);
     } else if (frame->interrupt_number < 32) {

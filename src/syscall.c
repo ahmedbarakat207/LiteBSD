@@ -42,31 +42,31 @@ typedef int (*syscall_func_t)(uint32_t, uint32_t, uint32_t);
 
 static const syscall_func_t syscall_table[] = {
     NULL,                       // 0
-    sys_write,  // 1
-    sys_read,   // 2
-    sys_exit,   // 3
-    sys_getpid, // 4
-    sys_fork, // 5
-    sys_execve, // 6
-    sys_wait4, // 7
-    sys_getppid, // 8
-    sys_brk, // 9
-    sys_mmap, // 10
-    sys_munmap, // 11
-    sys_pipe, // 12
-    sys_dup, // 13
-    sys_dup2, // 14
-    sys_kill, // 15
-    sys_ioctl, // 16
-    sys_open, // 17
-    sys_close, // 18
-    sys_lseek, // 19
-    sys_stat, // 20
-    sys_fstat, // 21
-    sys_unlink, // 22
-    sys_mkdir, // 23
-    sys_chdir, // 24
-    sys_getcwd, // 25
+    sys_write,                  // 1
+    sys_read,                   // 2
+    sys_exit,                   // 3
+    sys_getpid,                 // 4
+    sys_fork,                   // 5
+    sys_execve,                 // 6
+    sys_wait4,                  // 7
+    sys_getppid,                // 8
+    sys_brk,                    // 9
+    sys_mmap,                   // 10
+    sys_munmap,                 // 11
+    sys_pipe,                   // 12
+    sys_dup,                    // 13
+    sys_dup2,                   // 14
+    sys_kill,                   // 15
+    sys_ioctl,                  // 16
+    sys_open,                   // 17
+    sys_close,                  // 18
+    sys_lseek,                  // 19
+    sys_stat,                   // 20
+    sys_fstat,                  // 21
+    sys_unlink,                 // 22
+    sys_mkdir,                  // 23
+    sys_chdir,                  // 24
+    sys_getcwd,                 // 25
 };
 
 #define SYSCALL_COUNT (sizeof(syscall_table)/sizeof(syscall_table[0]))
@@ -553,7 +553,7 @@ static int sys_getcwd(uint32_t buffer, uint32_t size, uint32_t unused1){
     return (int)i;
 }
 
-void syscall_handler(struct interrupt_frame *frame){
+struct interrupt_frame *syscall_handler(struct interrupt_frame *frame){
     uint32_t syscall_num = frame->eax;
     uint32_t arg1 = frame->ebx;
     uint32_t arg2 = frame->ecx;
@@ -567,4 +567,10 @@ void syscall_handler(struct interrupt_frame *frame){
         println("[KERNEL] Unknown syscall", VGA_COLOR_RED);
         frame->eax = -1;
     }
+
+    task_t *task = scheduler_current_task();
+    if (task && task->state == TASK_ZOMBIE) {
+        frame = schedule(frame);
+    }
+    return frame;
 }

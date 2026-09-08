@@ -390,5 +390,4 @@ void task_exit(int status){
     for (int i = 0; i < MAX_FDS; i++){
         if (current_task->fds[i]) release_fd(current_task, i);
     }
-    while (1) asm volatile("hlt");
 }

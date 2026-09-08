@@ -28,7 +28,7 @@
 #define GETCWD  25
 
 struct interrupt_frame;
-void syscall_handler(struct interrupt_frame *frame);
+struct interrupt_frame *syscall_handler(struct interrupt_frame *frame);
 
 static inline int syscall0(uint32_t number){
 	uint32_t result;
