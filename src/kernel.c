@@ -11,11 +11,19 @@
 
 static void user_init(void){
     println("[USER_INIT] Starting user_init...", VGA_COLOR_LIGHT_CYAN);
-    char *argv[] = { "/bin/sh", NULL };
-    syscall_execve("/bin/sh", argv, NULL);
+    char *argv[] = { "sh", "-i", NULL };
+    char *envp[] = {
+        "PATH=/bin:/sbin:/usr/bin:/usr/sbin",
+        "HOME=/root",
+        "USER=root",
+        "TERM=vt100",
+        "PS1=LiteBSD:\\w# ",
+        NULL
+    };
+    syscall_execve("/bin/sh", argv, envp);
 
-    char *bb_argv[] = { "/bin/busybox", "sh", NULL };
-    syscall_execve("/bin/busybox", bb_argv, NULL);
+    char *bb_argv[] = { "busybox", "sh", "-i", NULL };
+    syscall_execve("/bin/busybox", bb_argv, envp);
 
     char err_msg[] = "[INIT] Failed to exec /bin/sh or /bin/busybox\n";
     syscall_write(err_msg, sizeof(err_msg) - 1);

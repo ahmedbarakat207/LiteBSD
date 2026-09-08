@@ -35,6 +35,7 @@ static int sys_unlink(uint32_t path, uint32_t unused1, uint32_t unused2);
 static int sys_mkdir(uint32_t path, uint32_t unused1, uint32_t unused2);
 static int sys_chdir(uint32_t path, uint32_t unused1, uint32_t unused2);
 static int sys_getcwd(uint32_t buffer, uint32_t size, uint32_t unused1);
+static int sys_getdents(uint32_t fd, uint32_t buf, uint32_t bufsize);
 
 static int sys_execve_impl(struct interrupt_frame *frame, uint32_t path);
 
@@ -67,6 +68,7 @@ static const syscall_func_t syscall_table[] = {
     sys_mkdir,                  // 23
     sys_chdir,                  // 24
     sys_getcwd,                 // 25
+    sys_getdents,               // 26
 };
 
 #define SYSCALL_COUNT (sizeof(syscall_table)/sizeof(syscall_table[0]))
@@ -91,7 +93,8 @@ static int syscall_string_valid(uint32_t address){
 
 static int sys_write(uint32_t fd, uint32_t buffer, uint32_t count){
     if (buffer == 0 || !syscall_range_valid(buffer, count)) return -1;
-    if (fd == 1 || fd == 2) { // stdout and stderr
+    task_t *task = scheduler_current_task();
+    if (fd == 1 || fd == 2 || (task && (int)fd >= 0 && fd < MAX_FDS && task->fds[fd] && !task->fds[fd]->node && !task->fds[fd]->pipe)) {
         const char *buf = (const char *)buffer;
         for (uint32_t i = 0; i < count; i++) {
             print_char(buf[i], VGA_COLOR_WHITE);
@@ -99,7 +102,6 @@ static int sys_write(uint32_t fd, uint32_t buffer, uint32_t count){
         return count;
     }
 
-    task_t *task = scheduler_current_task();
     if ((int)fd < 0 || fd >= MAX_FDS || !task->fds[fd]) {
         return -1;
     }
@@ -132,7 +134,8 @@ static int sys_write(uint32_t fd, uint32_t buffer, uint32_t count){
 
 static int sys_read(uint32_t fd, uint32_t buffer, uint32_t count){
     if (buffer == 0 || count == 0 || !syscall_range_valid(buffer, count)) return -1;
-    if (fd == 0) {
+    task_t *task = scheduler_current_task();
+    if (fd == 0 || (task && (int)fd >= 0 && fd < MAX_FDS && task->fds[fd] && !task->fds[fd]->node && !task->fds[fd]->pipe)) {
         char *buf = (char *)buffer;
         uint32_t i = 0;
         while (i < count - 1) {
@@ -158,7 +161,6 @@ static int sys_read(uint32_t fd, uint32_t buffer, uint32_t count){
         return i;
     }
 
-    task_t *task = scheduler_current_task();
     if ((int)fd < 0 || fd >= MAX_FDS || !task->fds[fd]) {
         return -1;
     }
@@ -547,32 +549,23 @@ static int sys_chdir(uint32_t path, uint32_t unused1, uint32_t unused2){
     (void)unused1;
     (void)unused2;
     if (!syscall_string_valid(path)) return -1;
-    task_t *task = scheduler_current_task();
-    int result = vfs_chdir((const char*)path);
-    if (result == 0) {
-        const char *p = (const char*)path;
-        int i = 0;
-        while (p[i] && i < 255) {
-            task->cwd[i] = p[i];
-            i++;
-        }
-        task->cwd[i] = '\0';
-    }
-    return result;
+    return vfs_chdir((const char*)path);
 }
 
 static int sys_getcwd(uint32_t buffer, uint32_t size, uint32_t unused1){
     (void)unused1;
     if (buffer == 0 || size == 0 || !syscall_range_valid(buffer, size)) return -1;
+    return vfs_getcwd((char*)buffer, size);
+}
+
+static int sys_getdents(uint32_t fd, uint32_t buf, uint32_t bufsize){
+    if (buf == 0 || bufsize == 0 || !syscall_range_valid(buf, bufsize)) return -1;
     task_t *task = scheduler_current_task();
-    char *buf = (char*)buffer;
-    unsigned int i = 0;
-    while (task->cwd[i] && i < size - 1) {
-        buf[i] = task->cwd[i];
-        i++;
-    }
-    buf[i] = '\0';
-    return (int)i;
+    if (!task) return -1;
+    if ((int)fd < 0 || fd >= MAX_FDS || !task->fds[fd]) return -1;
+    struct file *f = task->fds[fd];
+    if (!f->node) return -1;
+    return vfs_getdents_by_node(f->node, (void*)buf, bufsize);
 }
 
 struct interrupt_frame *syscall_handler(struct interrupt_frame *frame){

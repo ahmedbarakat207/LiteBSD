@@ -21,3 +21,7 @@ int vfs_unlink(const char *path);
 int vfs_mkdir(const char *path);
 int vfs_chdir(const char *path);
 int vfs_getcwd(char *buffer, unsigned int size);
+void vfs_resolve_path(const char *cwd, const char *path, char *out, unsigned int max_len);
+struct vfs_node *vfs_find_node(const char *path);
+int vfs_getdents(const char *path, void *buf, unsigned int bufsize);
+int vfs_getdents_by_node(struct vfs_node *node, void *buf, unsigned int bufsize);

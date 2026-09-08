@@ -132,6 +132,37 @@ void initrd_load(uint32_t start, uint32_t end) {
                     print("[INITRD] Failed to create file: ", VGA_COLOR_RED);
                     println(path, VGA_COLOR_RED);
                 }
+            } else if (type == '1' || type == '2') {
+                char parent_dir[256];
+                size_t p_len = 0;
+                while (path[p_len]) {
+                    parent_dir[p_len] = path[p_len];
+                    p_len++;
+                }
+                parent_dir[p_len] = '\0';
+                while (p_len > 1 && parent_dir[p_len - 1] != '/') p_len--;
+                if (p_len > 1 && parent_dir[p_len - 1] == '/') p_len--;
+                parent_dir[p_len] = '\0';
+
+                char target_path[256];
+                vfs_resolve_path(parent_dir, header->linkname, target_path, sizeof(target_path));
+                struct vfs_node *target = vfs_find_node(target_path);
+                struct vfs_node *node = target ? vfs_open(path, 0x40 | 0x02) : NULL;
+                if (target && node) {
+                    struct stat tst;
+                    if (vfs_fstat(target, &tst) == 0 && tst.st_size > 0) {
+                        char *tmp = (char*)kmalloc(tst.st_size);
+                        if (tmp) {
+                            vfs_read(target, 0, tmp, tst.st_size);
+                            vfs_write(node, 0, tmp, tst.st_size);
+                            kfree(tmp);
+                        }
+                    }
+                    vfs_close(node);
+                    files_loaded++;
+                    print("[INITRD] Linked file: ", VGA_COLOR_WHITE);
+                    println(path, VGA_COLOR_WHITE);
+                }
             }
         }
 

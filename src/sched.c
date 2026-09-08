@@ -89,7 +89,21 @@ int create_task(void (*entry)(void)){
     task->ppid = 0;
     task->state = TASK_RUNNING;
     task->exit_code = 0;
-    for (int i = 0; i < MAX_FDS; i++){
+    for (int i = 0; i < 3; i++) {
+        struct file *f = (struct file*)kmalloc(sizeof(struct file));
+        if (f) {
+            f->node = NULL;
+            f->offset = 0;
+            f->flags = (i == 0) ? 0 : 1;
+            f->ref_count = 1;
+            f->pipe = NULL;
+            f->pipe_end = 0;
+            task->fds[i] = f;
+        } else {
+            task->fds[i] = NULL;
+        }
+    }
+    for (int i = 3; i < MAX_FDS; i++){
         task->fds[i] = NULL;
     }
     task->cwd[0] = '/';
@@ -161,7 +175,21 @@ int create_user_task(void (*entry)(void)) {
     task->ppid = 0;
     task->state = TASK_RUNNING;
     task->exit_code = 0;
-    for (int i = 0; i < MAX_FDS; i++){
+    for (int i = 0; i < 3; i++) {
+        struct file *f = (struct file*)kmalloc(sizeof(struct file));
+        if (f) {
+            f->node = NULL;
+            f->offset = 0;
+            f->flags = (i == 0) ? 0 : 1;
+            f->ref_count = 1;
+            f->pipe = NULL;
+            f->pipe_end = 0;
+            task->fds[i] = f;
+        } else {
+            task->fds[i] = NULL;
+        }
+    }
+    for (int i = 3; i < MAX_FDS; i++){
         task->fds[i] = NULL;
     }
     task->cwd[0] = '/';

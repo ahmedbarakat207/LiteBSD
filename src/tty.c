@@ -29,7 +29,41 @@ void scroll_screen() {
     char_column = 0;
 }
 
+static int ansi_state = 0;
+
 void print_char(char c, char color) {
+    // ANSI escape sequence state machine
+    if (ansi_state == 0) {
+        if (c == 0x1b) {
+            ansi_state = 1;
+            return;
+        }
+    } else if (ansi_state == 1) {
+        if (c == '[') {
+            ansi_state = 2;
+            return;
+        } else {
+            ansi_state = 0;
+            return;
+        }
+    } else if (ansi_state == 2) {
+        if ((c >= '0' && c <= '9') || c == ';' || c == '?' || c == ' ' || c == '"') {
+            return;
+        }
+        ansi_state = 0;
+        return;
+    }
+
+    // tab
+    if (c == '\t') {
+        int next_stop = (char_column + 8) & ~7;
+        if (next_stop >= screen_width) next_stop = screen_width - 1;
+        while (char_column < next_stop) {
+            print_char(' ', color);
+        }
+        return;
+    }
+
     // backspace
     if (c == '\b') {
         if (char_column > 0) {
