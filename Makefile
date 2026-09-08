@@ -11,7 +11,7 @@ CFLAGS := -std=gnu11 -ffreestanding -O2 -Wall -Wextra -m32 \
 	-fno-pie -fno-stack-protector -fno-builtin
 LDFLAGS := -m elf_i386 -T linker.ld
 
-.PHONY: all clean iso libc busybox initrd run
+.PHONY: all clean iso run-iso libc busybox initrd run
 
 all: $(BUILD_DIR)/$(TARGET) busybox initrd
 
@@ -94,11 +94,15 @@ $(BUILD_DIR)/initrd.o: src/initrd.c src/include/initrd.h src/include/vfs.h src/i
 $(BUILD_DIR)/$(TARGET): $(BUILD_DIR)/boot.o $(BUILD_DIR)/kernel.o $(BUILD_DIR)/tty.o $(BUILD_DIR)/paging.o $(BUILD_DIR)/gdt.o $(BUILD_DIR)/idt.o $(BUILD_DIR)/keyboard.o $(BUILD_DIR)/heap.o $(BUILD_DIR)/time.o $(BUILD_DIR)/vfs.o $(BUILD_DIR)/sched.o $(BUILD_DIR)/syscall.o $(BUILD_DIR)/initrd.o linker.ld
 	$(LD) $(LDFLAGS) -o $@ $(BUILD_DIR)/boot.o $(BUILD_DIR)/kernel.o $(BUILD_DIR)/tty.o $(BUILD_DIR)/paging.o $(BUILD_DIR)/gdt.o $(BUILD_DIR)/idt.o $(BUILD_DIR)/keyboard.o $(BUILD_DIR)/heap.o $(BUILD_DIR)/time.o $(BUILD_DIR)/vfs.o $(BUILD_DIR)/sched.o $(BUILD_DIR)/syscall.o $(BUILD_DIR)/initrd.o
 
-iso: $(BUILD_DIR)/$(TARGET)
+iso: $(BUILD_DIR)/$(TARGET) initrd
 	mkdir -p $(ISO_DIR)/boot/grub
 	cp $(BUILD_DIR)/$(TARGET) $(ISO_DIR)/boot/kernel
+	cp $(BUILD_DIR)/initrd.tar $(ISO_DIR)/boot/initrd.tar
 	cp grub.cfg $(ISO_DIR)/boot/grub/grub.cfg
 	$(GRUB_MKRESCUE) -o $(BUILD_DIR)/$(TARGET).iso $(ISO_DIR)
+
+run-iso: iso
+	qemu-system-i386 -m 512M -cdrom $(BUILD_DIR)/$(TARGET).iso
 
 clean:
 	rm -rf $(BUILD_DIR)
