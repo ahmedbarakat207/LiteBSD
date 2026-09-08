@@ -27,6 +27,8 @@
 #define CHDIR   24
 #define GETCWD  25
 
+#define USER_LOAD_ADDR 0x8000000   
+
 struct interrupt_frame;
 struct interrupt_frame *syscall_handler(struct interrupt_frame *frame);
 

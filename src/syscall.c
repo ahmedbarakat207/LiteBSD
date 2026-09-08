@@ -218,21 +218,14 @@ static int sys_execve(uint32_t path, uint32_t argv, uint32_t envp){
     return sys_execve_impl(current_syscall_frame, path);
 }
 
-static int sys_execve_impl(struct interrupt_frame *frame, uint32_t path){
+static int sys_execve_impl(struct interrupt_frame *frame, uint32_t path) {
     struct vfs_node *node = vfs_open((const char*)path, 0);
-    if (!node) {
-        return -1;
-    }
+    if (!node) return -1;
 
     unsigned char header[52];
-    if (vfs_read(node, 0, header, 52) != 52) {
-        vfs_close(node);
-        return -1;
-    }
-
+    if (vfs_read(node, 0, header, 52) != 52) { vfs_close(node); return -1; }
     if (header[0] != 0x7F || header[1] != 'E' || header[2] != 'L' || header[3] != 'F') {
-        vfs_close(node);
-        return -1;
+        vfs_close(node); return -1;
     }
 
     uint32_t entry = *(uint32_t*)&header[24];
@@ -240,11 +233,15 @@ static int sys_execve_impl(struct interrupt_frame *frame, uint32_t path){
     uint16_t phentsize = *(uint16_t*)&header[42];
     uint16_t phnum = *(uint16_t*)&header[44];
 
+    // clear the userspace
+    for (uint32_t i = 0; i < 0x400000; i++) {
+        ((char*)USER_LOAD_ADDR)[i] = 0;
+    }
+
     for (uint16_t i = 0; i < phnum; i++) {
         unsigned char ph[32];
         if (vfs_read(node, phoff + i * phentsize, ph, 32) != 32) {
-            vfs_close(node);
-            return -1;
+            vfs_close(node); return -1;
         }
         uint32_t p_type = *(uint32_t*)&ph[0];
         uint32_t p_offset = *(uint32_t*)&ph[4];
@@ -252,27 +249,39 @@ static int sys_execve_impl(struct interrupt_frame *frame, uint32_t path){
         uint32_t p_filesz = *(uint32_t*)&ph[16];
         uint32_t p_memsz = *(uint32_t*)&ph[20];
 
-        if (p_type != ELF_PT_LOAD) {
-            continue;
-        }
+        if (p_type != ELF_PT_LOAD) continue;
 
-        for (uint32_t j = 0; j < p_memsz; j++) {
-            ((char*)p_vaddr)[j] = 0;
-        }
+        // go back to the userspace bitch
+        uint32_t base = USER_LOAD_ADDR;
+        void *dest = (void*)(base + (p_vaddr - USER_LOAD_ADDR));
         if (p_filesz > 0) {
-            vfs_read(node, p_offset, (void*)p_vaddr, p_filesz);
+            vfs_read(node, p_offset, dest, p_filesz);
+        }
+        if (p_memsz > p_filesz) {
+            for (uint32_t j = p_filesz; j < p_memsz; j++) {
+                ((char*)dest)[j] = 0;
+            }
         }
     }
 
     vfs_close(node);
+    uint32_t *stack = (uint32_t*)kmalloc(16384);
+    if (!stack) return -1;
+    uint32_t stack_top = (uint32_t)stack + 16384;
+    stack_top &= ~0x0F;
 
     task_t *task = scheduler_current_task();
+    if (task->user_stack_base) kfree(task->user_stack_base);
+    task->user_stack_base = stack;
+    task->user_stack_top = stack_top;
+
     frame->eip = entry;
-    frame->esp = task->heap_end;
+    frame->esp = stack_top;
+    frame->useresp = stack_top;
     frame->eax = 0;
+
     return 0;
 }
-
 static int sys_wait4(uint32_t pid, uint32_t status, uint32_t unused1){
     (void)unused1;
     if (status && !syscall_range_valid(status, sizeof(int))) return -1;

@@ -15,6 +15,7 @@ start:
     push gdt_descriptor
     call gdt_flush
     add esp, 4
+    push ebx
     call kernel_main
 
 halt:

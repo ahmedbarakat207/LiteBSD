@@ -6,6 +6,8 @@
 #include "include/sched.h"
 #include "include/time.h"
 #include "include/syscall.h"
+#include "include/initrd.h"
+#include "include/multiboot.h"
 
 static void user_init(void){
     char message[] = "userspace: parent\n";
@@ -23,11 +25,27 @@ static void user_init(void){
     syscall_exit(0);
 }
 
-void kernel_main(){
+void kernel_main(struct mb_info *info){
     clear();
     gdt_init();
     idt_init();
     paging_init();
+
+    if (info && (info->flags & MB_INFO_MODS)) {
+        uint32_t mods_count = info->mods_count;
+        uint32_t mods_addr = info->mods_addr;
+        struct mb_mod *mods = (struct mb_mod*)mods_addr;
+        if (mods_count >= 1) {
+            uint32_t start = mods[0].mod_start;
+            uint32_t end = mods[0].mod_end;
+            initrd_load(start, end);
+        } else {
+            println("[KERNEL] No initrd module found.", VGA_COLOR_RED);
+        }
+    } else {
+        println("[KERNEL] No multiboot modules present.", VGA_COLOR_RED);
+    }
+
 
     pic_remap();
     outb(PIC1_DATA, 0xFC); 
