@@ -31,7 +31,9 @@ void keyboard_handler(){
 }
 
 char getchar(){
-    while(buffer_head == buffer_tail); // wait for key press
+    while(buffer_head == buffer_tail) {
+        asm volatile("sti; hlt"); // wait for key press or timer interrupt
+    }
     char c = key_buffer[buffer_tail];
     buffer_tail = (buffer_tail + 1) % 256;
     return c;

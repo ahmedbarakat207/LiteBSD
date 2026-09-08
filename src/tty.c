@@ -1,6 +1,7 @@
 #include "include/tty.h"
 #include "include/keyboard.h"
 #include "include/heap.h"
+#include "include/sched.h"
 
 // print rows/columns
 int char_raw = 0;
@@ -102,6 +103,10 @@ static int strings_equal(const char *left, const char *right){
 }
 
 void shell(){
+    while(scheduler_other_running_tasks() > 0){
+        asm volatile("sti; hlt");
+    }
+    new_line();
     println("LiteBSD Shell", VGA_COLOR_WHITE);
     println("Type 'help' for a list of commands.", VGA_COLOR_WHITE);
     new_line();
@@ -118,7 +123,7 @@ void shell(){
                     print_char(' ', VGA_COLOR_WHITE);
                     print_char('\b', VGA_COLOR_WHITE);
                 }
-            } else {
+            } else if (i < 255) {
                 input[i++] = c;
                 print_char(c, VGA_COLOR_WHITE);
             }
@@ -134,7 +139,8 @@ void shell(){
             clear();
         } else if(strings_equal(input, "exit")){
             println("Exiting shell...", VGA_COLOR_WHITE);
-            break;
+            kfree(input);
+            while(1) asm volatile("hlt");
         } else {
             println("Unknown command. Type 'help' for a list of commands.", VGA_COLOR_RED);
         }

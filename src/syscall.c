@@ -562,6 +562,12 @@ struct interrupt_frame *syscall_handler(struct interrupt_frame *frame){
 
     if (syscall_num < SYSCALL_COUNT && syscall_table[syscall_num]) {
         int ret = syscall_table[syscall_num](arg1, arg2, arg3);
+        if (syscall_num == 7 && ret == -2) {
+            frame->eax = syscall_num;
+            frame->eip -= 2;
+            frame = schedule(frame);
+            return frame;
+        }
         frame->eax = ret;
     } else {
         println("[KERNEL] Unknown syscall", VGA_COLOR_RED);

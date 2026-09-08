@@ -58,3 +58,4 @@ int wait4(int pid, int *status);
 void task_exit(int status);
 int alloc_fd(task_t *task, struct file *f);
 void release_fd(task_t *task, int fd);
+int scheduler_other_running_tasks(void);

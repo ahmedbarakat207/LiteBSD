@@ -215,6 +215,19 @@ task_t *scheduler_current_task(void){
     return current_task;
 }
 
+int scheduler_other_running_tasks(void){
+    if (!ready_queue) return 0;
+    int count = 0;
+    task_t *t = ready_queue->next;
+    do {
+        if (t != current_task && t->state == TASK_RUNNING){
+            count++;
+        }
+        t = t->next;
+    } while (t != ready_queue->next);
+    return count;
+}
+
 int scheduler_user_range_valid(const void *ptr, uint32_t length){
     if (!current_task || !current_task->user || ptr == NULL) return 0;
     uint32_t start = (uint32_t)ptr;
@@ -308,9 +321,10 @@ int fork_task(struct interrupt_frame *frame){
         for (unsigned int i = 0; i < 4096; i++) {
             ((char*)task->user_stack_base)[i] = ((char*)current_task->user_stack_base)[i];
         }
-        task->user_stack_top = (uint32_t)task->user_stack_base +
-            (current_task->user_stack_top - (uint32_t)current_task->user_stack_base);
-        child_frame->useresp = task->user_stack_top;
+        uint32_t stack_delta = (uint32_t)task->user_stack_base - (uint32_t)current_task->user_stack_base;
+        task->user_stack_top = current_task->user_stack_top + stack_delta;
+        child_frame->useresp = frame->useresp + stack_delta;
+        child_frame->ebp = frame->ebp + stack_delta;
     }
 
     for (int i = 0; i < MAX_FDS; i++){
@@ -372,7 +386,7 @@ int wait4(int pid, int *status){
             kfree(found);
             return child_pid;
         }
-        asm volatile("hlt");
+        return -2;
     }
 }
 
