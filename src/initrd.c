@@ -133,12 +133,10 @@ void initrd_load(uint32_t start, uint32_t end) {
                     println(path, VGA_COLOR_RED);
                 }
             } else if (type == '1' || type == '2') {
-                /* In ustar, hardlink targets are relative to archive root, not the link file.
-                 * Strip leading "./" and treat as absolute path. */
                 const char *lname = header->linkname;
                 char target_path[256];
                 if (lname[0] == '.' && lname[1] == '/') {
-                    /* strip "./" prefix */
+                    // strip "./" prefix 
                     target_path[0] = '/';
                     size_t li = 0;
                     while (lname[2 + li] && li < sizeof(target_path) - 2) {

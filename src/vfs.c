@@ -299,36 +299,26 @@ int vfs_getcwd(char *buffer, unsigned int size){
     return (int)i;
 }
 
-/* kernel_dirent layout (must match libc dirent.c):
- *   uint32_t d_ino;
- *   uint32_t d_reclen;   (total size of this record in bytes)
- *   char     d_name[];   (null-terminated)
- */
 int vfs_getdents(const char *path, void *buf, unsigned int bufsize) {
     if (!path || !buf || bufsize == 0) return -1;
-
-    /* Resolve the path to an absolute canonical form */
     task_t *task = scheduler_current_task();
     const char *cwd = (task && task->cwd[0]) ? task->cwd : "/";
     char dir_path[256];
     vfs_resolve_path(cwd, path, dir_path, sizeof(dir_path));
 
-    /* Must exist and be a directory */
+    // must exist and be a directory
     struct vfs_node *dir = find_node(dir_path);
     if (!dir || !(dir->mode & S_IFDIR)) return -1;
 
     unsigned int dir_len = 0;
     while (dir_path[dir_len]) dir_len++;
-    /* Remove trailing slash unless it's root */
+    // remove / if not root
     if (dir_len > 1 && dir_path[dir_len - 1] == '/') {
         dir_path[--dir_len] = '\0';
     }
 
     unsigned int written = 0;
     char *out = (char *)buf;
-
-    /* Always emit "." and ".." */
-    /* "." */
     {
         unsigned int name_len = 1;
         unsigned int reclen = 4 + 4 + name_len + 1;
@@ -340,12 +330,12 @@ int vfs_getdents(const char *path, void *buf, unsigned int bufsize) {
             written += reclen;
         }
     }
-    /* ".." */
+    // ..
     {
         unsigned int name_len = 2;
         unsigned int reclen = 4 + 4 + name_len + 1;
-        unsigned int parent_ino = 1; /* default to root ino */
-        /* find parent directory */
+        unsigned int parent_ino = 1; // default to root ino 
+        // find parent directory
         char parent[256];
         unsigned int pi = dir_len;
         while (pi > 1 && dir_path[pi - 1] != '/') pi--;
@@ -363,22 +353,19 @@ int vfs_getdents(const char *path, void *buf, unsigned int bufsize) {
             written += reclen;
         }
     }
-
-    /* Walk all nodes to find direct children of dir_path */
+    
     struct vfs_node *n = nodes;
     while (n) {
         const char *np = n->path;
-        /* np must start with dir_path + '/' */
         int is_child = 0;
         const char *name_start = NULL;
         if (dir_len == 1 && dir_path[0] == '/') {
-            /* root: any node /foo (depth 1) */
+            // root: any node /foo (depth 1)
             if (np[0] == '/' && np[1] != '\0') {
-                name_start = np + 1; /* skip leading slash */
+                name_start = np + 1; // skip leading slash 
                 is_child = 1;
             }
         } else {
-            /* Non-root: np must start with dir_path, then '/', then name */
             int match = 1;
             for (unsigned int i = 0; i < dir_len; i++) {
                 if (np[i] != dir_path[i]) { match = 0; break; }
@@ -389,7 +376,6 @@ int vfs_getdents(const char *path, void *buf, unsigned int bufsize) {
             }
         }
         if (is_child && name_start) {
-            /* make sure name has no '/' in it (direct child only) */
             int is_direct = 1;
             unsigned int name_len = 0;
             while (name_start[name_len]) {
