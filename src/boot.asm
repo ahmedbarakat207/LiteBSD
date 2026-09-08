@@ -26,6 +26,7 @@ section .bss
 align 16
 kernel_stack_bottom:
 resb 8192 ; 8kb stack
+global kernel_stack_top
 kernel_stack_top:
 
 section .rodata

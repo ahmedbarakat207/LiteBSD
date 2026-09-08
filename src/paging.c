@@ -7,11 +7,11 @@ void paging_init(){
     println("[PAGING] Initializing paging...", VGA_COLOR_WHITE);
     int i;
     for(i = 0; i < 1024; i++){
-        page_table[i] = (i * 0x1000) | 0x00000003; // r/w | present
+        page_table[i] = (i * 0x1000) | 0x00000007; // user, r/w, present
     }
-    page_dir[0] = (unsigned int)page_table | 0x00000003;
+    page_dir[0] = (unsigned int)page_table | 0x00000007;
     for (i = 1; i < 1024; i++) {
-        page_dir[i] = ((unsigned int)i << 22) | 0x00000083; // 4mb page, r/w, present
+        page_dir[i] = ((unsigned int)i << 22) | 0x00000087; // user, 4mb, r/w, present
     }
 
     // load page_dir into cr3
@@ -19,7 +19,7 @@ void paging_init(){
 
     unsigned int cr4;
     asm volatile("mov %%cr4, %0" : "=r"(cr4));
-    cr4 |= 0x00000010; // enable 4 MiB pages (CR4.PSE)
+    cr4 |= 0x00000010; // enable 4mb pages (CR4.PSE)
     asm volatile("mov %0, %%cr4" : : "r"(cr4));
 
     unsigned int cr0;

@@ -30,4 +30,6 @@ struct interrupt_frame {
 	unsigned int eip;
 	unsigned int cs;
 	unsigned int eflags;
+	unsigned int useresp;
+	unsigned int ss;
 };

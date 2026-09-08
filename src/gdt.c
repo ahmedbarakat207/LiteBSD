@@ -1,3 +1,4 @@
+#include <stdint.h>
 #include "include/gdt.h"
 #include "include/tty.h"
 
@@ -17,8 +18,40 @@ struct gdt_ptr {
     unsigned int base;
 } __attribute__((packed));
 
-struct gdt_entry gdt[5]; // NULL, kernel_code, kernel_data, user_code, user_data
+struct gdt_entry gdt[6]; // NULL, kernel/user code/data, TSS
 struct gdt_ptr gp;
+
+struct tss_entry {
+    uint32_t previous_tss;
+    uint32_t esp0;
+    uint32_t ss0;
+    uint32_t esp1;
+    uint32_t ss1;
+    uint32_t esp2;
+    uint32_t ss2;
+    uint32_t cr3;
+    uint32_t eip;
+    uint32_t eflags;
+    uint32_t eax;
+    uint32_t ecx;
+    uint32_t edx;
+    uint32_t ebx;
+    uint32_t esp;
+    uint32_t ebp;
+    uint32_t esi;
+    uint32_t edi;
+    uint32_t es;
+    uint32_t cs;
+    uint32_t ss;
+    uint32_t ds;
+    uint32_t fs;
+    uint32_t gs;
+    uint32_t ldt;
+    uint16_t trap;
+    uint16_t iomap_base;
+} __attribute__((packed));
+
+static struct tss_entry tss;
 
 void gdt_set_gate(int num, unsigned long base, unsigned long limit, unsigned char access, unsigned char gran){
     gdt[num].base_low = (base & 0xFFFF);
@@ -38,7 +71,7 @@ extern void gdt_flush(unsigned int);
 // initialize gdt
 void gdt_init(){
     println("[GDT] Initializing GDT...", VGA_COLOR_WHITE);
-    gp.limit = (sizeof(struct gdt_entry) * 5) - 1;
+    gp.limit = (sizeof(struct gdt_entry) * 6) - 1;
     gp.base = (unsigned int)&gdt;
 
     gdt_set_gate(0, 0, 0, 0, 0); // null segment
@@ -46,7 +79,17 @@ void gdt_init(){
     gdt_set_gate(2, 0, 0xFFFFFFFF, 0x92, 0xCF); // kernel data segment
     gdt_set_gate(3, 0, 0xFFFFFFFF, 0xFA, 0xCF); // user code segment
     gdt_set_gate(4, 0, 0xFFFFFFFF, 0xF2, 0xCF); // user data segment
+    gdt_set_gate(5, (unsigned long)&tss, sizeof(tss) - 1, 0x89, 0x40);
+
+    tss.ss0 = 0x10;
+    tss.esp0 = 0;
+    tss.iomap_base = sizeof(tss);
 
     gdt_flush((unsigned int)&gp);
+    asm volatile("ltr %%ax" : : "a"((unsigned short)0x28));
     println("[GDT] GDT initialized.", VGA_COLOR_GREEN);
+}
+
+void tss_set_kernel_stack(unsigned int stack_top){
+    tss.esp0 = stack_top;
 }
