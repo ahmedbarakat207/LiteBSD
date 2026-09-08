@@ -7,6 +7,7 @@ struct pipe;
 #define MAX_FDS 16
 #define TASK_RUNNING 0
 #define TASK_ZOMBIE 1
+#define TASK_BLOCKED 2 // dad naps till kid execs or dies
 
 struct file {
     struct vfs_node *node;
@@ -56,6 +57,7 @@ task_t *find_task(uint32_t pid);
 int fork_task(struct interrupt_frame *frame);
 int wait4(int pid, int *status, int options);
 void task_exit(int status);
+void task_unblock(uint32_t pid);
 int alloc_fd(task_t *task, struct file *f);
 void release_fd(task_t *task, int fd);
 int scheduler_other_running_tasks(void);

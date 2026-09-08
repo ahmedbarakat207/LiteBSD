@@ -86,6 +86,7 @@ int create_task(void (*entry)(void)){
     task->user_stack_base = NULL;
     task->user_stack_top = 0;
     task->next = NULL;
+    task->user = 0; // kernel task
     task->ppid = 0;
     task->state = TASK_RUNNING;
     task->exit_code = 0;
@@ -221,8 +222,16 @@ struct interrupt_frame *schedule(struct interrupt_frame *frame){
     current_task->frame = frame;
 
     task_t *next = current_task->next;
-    while (next->state == TASK_ZOMBIE && next != current_task) {
+    // skip corpses and napping dads
+    // if everyone else is dead/asleep just keep running current lol
+    task_t *start = next;
+    while ((next->state == TASK_ZOMBIE || next->state == TASK_BLOCKED) && next != current_task) {
         next = next->next;
+        if (next == start) break;
+    }
+    // picked a corpse but current is fine? stay on current then
+    if ((next->state == TASK_ZOMBIE || next->state == TASK_BLOCKED) && current_task->state == TASK_RUNNING) {
+        next = current_task;
     }
     current_task = next;
     tss_set_kernel_stack((uint32_t)current_task->stack_base + 4096);
@@ -322,7 +331,37 @@ void release_fd(task_t *task, int fd){
     task->fds[fd] = NULL;
 }
 
+// poke dad awake when the kid is done
+static void unblock_parent_of(task_t *child) {
+    if (!child || !ready_queue) return;
+    uint32_t ppid = child->ppid;
+    if (ppid == 0) return;
+    task_t *t = ready_queue->next;
+    do {
+        if (t->pid == ppid && t->state == TASK_BLOCKED) {
+            t->state = TASK_RUNNING;
+            break;
+        }
+        t = t->next;
+    } while (t != ready_queue->next);
+}
+
+void task_unblock(uint32_t pid) {
+    if (!ready_queue || pid == 0) return;
+    task_t *t = ready_queue->next;
+    do {
+        if (t->pid == pid && t->state == TASK_BLOCKED) {
+            t->state = TASK_RUNNING;
+            break;
+        }
+        t = t->next;
+    } while (t != ready_queue->next);
+}
+
 // fork not a spoon
+// no mmu so everybody shares the same user memory lol
+// copying heap just leaves stale pointers everywhere + leaks 1mb a fork
+// so kid shares heap, gets its own stack copy, dad naps till kid execs or dies
 int fork_task(struct interrupt_frame *frame){
     uint32_t *stack = (uint32_t*)kmalloc(4096);
     if (!stack){
@@ -330,6 +369,10 @@ int fork_task(struct interrupt_frame *frame){
     }
 
     unsigned int offset = (unsigned int)frame - (unsigned int)current_task->stack_base;
+    if (offset >= 4096) {
+        kfree(stack);
+        return -1;
+    }
     for (unsigned int i = 0; i < 4096; i++){
         ((char*)stack)[i] = ((char*)current_task->stack_base)[i];
     }
@@ -346,6 +389,8 @@ int fork_task(struct interrupt_frame *frame){
     task->ppid = current_task->pid;
     task->frame = child_frame;
     task->stack_base = stack;
+    // kid gets its own stack copy so it cant trash dads frames
+    // heap stays shared so heap pointers dont go stale (see below)
     task->user_stack_base = current_task->user_stack_base;
     task->user_stack_top = current_task->user_stack_top;
     task->next = NULL;
@@ -356,19 +401,28 @@ int fork_task(struct interrupt_frame *frame){
     if (current_task->user_stack_base) {
         uint32_t stack_size = current_task->user_stack_top - (uint32_t)current_task->user_stack_base;
         if (stack_size == 0 || stack_size > 65536) stack_size = 16384;
-        task->user_stack_base = kmalloc(stack_size);
-        if (!task->user_stack_base) {
+        void *new_ustack = kmalloc(stack_size);
+        if (!new_ustack) {
             kfree(stack);
             kfree(task);
             return -1;
         }
         for (unsigned int i = 0; i < stack_size; i++) {
-            ((char*)task->user_stack_base)[i] = ((char*)current_task->user_stack_base)[i];
+            ((char*)new_ustack)[i] = ((char*)current_task->user_stack_base)[i];
         }
-        uint32_t stack_delta = (uint32_t)task->user_stack_base - (uint32_t)current_task->user_stack_base;
+        uint32_t stack_delta = (uint32_t)new_ustack - (uint32_t)current_task->user_stack_base;
+        task->user_stack_base = new_ustack;
         task->user_stack_top = current_task->user_stack_top + stack_delta;
-        child_frame->useresp = frame->useresp + stack_delta;
-        child_frame->ebp = frame->ebp + stack_delta;
+        // only shift pointers that actually live in the old stack
+        // shifting everything blindly corrupts shit like a heap ebp
+        uint32_t old_base = (uint32_t)current_task->user_stack_base;
+        uint32_t old_top = current_task->user_stack_top;
+        if (frame->useresp >= old_base && frame->useresp <= old_top) {
+            child_frame->useresp = frame->useresp + stack_delta;
+        }
+        if (frame->ebp >= old_base && frame->ebp <= old_top) {
+            child_frame->ebp = frame->ebp + stack_delta;
+        }
     }
 
     for (int i = 0; i < MAX_FDS; i++){
@@ -380,24 +434,14 @@ int fork_task(struct interrupt_frame *frame){
         task->cwd[i] = current_task->cwd[i];
     }
 
-    {
-        unsigned int heap_size = current_task->heap_end - current_task->heap_start;
-        unsigned int new_heap = (unsigned int)kmalloc(heap_size);
-        if (new_heap){
-            for (unsigned int i = 0; i < heap_size; i++){
-                ((char*)new_heap)[i] = ((char*)current_task->heap_start)[i];
-            }
-            task->heap_start = new_heap;
-            task->heap_brk = new_heap + (current_task->heap_brk - current_task->heap_start);
-            task->heap_end = new_heap + heap_size;
-        } else {
-            task->heap_start = 0;
-            task->heap_brk = 0;
-            task->heap_end = 0;
-        }
-    }
+    // share heap, dont copy that shit (stale pointers + 1mb leak per fork)
+    task->heap_start = current_task->heap_start;
+    task->heap_brk = current_task->heap_brk;
+    task->heap_end = current_task->heap_end;
 
     add_task(task);
+    // dad naps till kid execs or dies
+    current_task->state = TASK_BLOCKED;
     return (int)task->pid;
 }
 
@@ -426,7 +470,9 @@ int wait4(int pid, int *status, int options){
             int child_pid = (int)found->pid;
             remove_task(found);
             kfree(found->stack_base);
-            if (found->user_stack_base) kfree(found->user_stack_base);
+            // stack might be shared with dad so only free it if its actually the kids own
+            if (found->user_stack_base && found->user_stack_base != current_task->user_stack_base) kfree(found->user_stack_base);
+            // heap is shared, hands off (dad still uses it)
             kfree(found);
             return child_pid;
         }
@@ -441,6 +487,7 @@ void task_exit(int status){
     if (!current_task) return;
     current_task->state = TASK_ZOMBIE;
     current_task->exit_code = status;
+    unblock_parent_of(current_task);
     if (ready_queue) {
         task_t *t = ready_queue->next;
         do {

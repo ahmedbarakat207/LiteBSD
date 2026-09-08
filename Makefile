@@ -35,6 +35,10 @@ busybox: libc
 		echo "Patching busybox for LiteBSD..."; \
 		git -C busybox apply ../busybox.patch || patch -p1 -d busybox < busybox.patch; \
 	fi
+	@if [ -f libc/build/libc.a ] && [ -f busybox/busybox ] && [ libc/build/libc.a -nt busybox/busybox ]; then \
+		echo "libc changed, forcing busybox relink..."; \
+		rm -f busybox/busybox; \
+	fi
 	$(MAKE) -C busybox -j4 ARCH=i386 CROSS_COMPILE=i686-elf-
 
 initrd: busybox | $(BUILD_DIR)

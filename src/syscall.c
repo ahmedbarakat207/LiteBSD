@@ -287,9 +287,24 @@ static int sys_execve_impl(struct interrupt_frame *frame, uint32_t path) {
     stack_top &= ~0x0F;
 
     task_t *task = scheduler_current_task();
-    if (task->user_stack_base) kfree(task->user_stack_base);
-    task->user_stack_base = stack;
-    task->user_stack_top = stack_top;
+    if (task) {
+        // stack might be dads so dont free shared shit, just ditch it
+        void *old_base = task->user_stack_base;
+        int shared = 0;
+        if (old_base && task->ppid != 0) {
+            task_t *parent = find_task(task->ppid);
+            if (parent && parent->user_stack_base == old_base) shared = 1;
+        }
+        if (old_base && !shared) kfree(old_base);
+        task->user_stack_base = stack;
+        task->user_stack_top = stack_top;
+        // kid execd so poke dad awake, kid has its own stack now
+        task_unblock(task->ppid);
+    } else {
+        // no task?? that shouldnt happen lol, dont leak
+        kfree(stack);
+        return -1;
+    }
 
     frame->eip = entry;
     frame->esp = stack_top;
@@ -584,6 +599,11 @@ struct interrupt_frame *syscall_handler(struct interrupt_frame *frame){
             return frame;
         }
         frame->eax = ret;
+        // dad is napping so run the kid first before dad touches shared shit again
+        if (syscall_num == 5 && ret > 0) {
+            frame = schedule(frame);
+            return frame;
+        }
     } else {
         println("[KERNEL] Unknown syscall", VGA_COLOR_RED);
         frame->eax = -1;

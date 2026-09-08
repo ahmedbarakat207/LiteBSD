@@ -29,6 +29,21 @@ static void user_init(void){
     syscall_write(err_msg, sizeof(err_msg) - 1);
     syscall_exit(1);
 }
+void respawn_user_shell(void) {
+    // sh croaked, bring it back lol
+    println("[INIT] Respawning shell...", VGA_COLOR_YELLOW);
+    // serial copy too cuz vga doesnt show on headless lol
+    {
+        const char *s = "[SERIAL] respawning shell\n";
+        while (*s) {
+            unsigned char lsr;
+            do { asm volatile("inb %1, %0" : "=a"(lsr) : "Nd"((unsigned short)(0x3F8 + 5))); } while ((lsr & 0x20) == 0);
+            asm volatile("outb %0, %1" : : "a"((unsigned char)*s), "Nd"((unsigned short)0x3F8));
+            s++;
+        }
+    }
+    create_user_task(user_init);
+}
 
 void kernel_main(struct mb_info *info){
     clear();
@@ -65,7 +80,11 @@ void kernel_main(struct mb_info *info){
     println("Welcome to LiteBSD!!!", VGA_COLOR_WHITE);
 
     sched_init();
-    create_task(shell);
+    // only hush owns the keyboard lol
+    // the kernel shell kept stealing input and racing fork+exec
+    // which corrupted dad after a failed exec and dumped u at the wrong prompt
+    // create_task(shell);
+    (void)shell;
     create_user_task(user_init);
 
     asm volatile("sti");
