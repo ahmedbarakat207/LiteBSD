@@ -3,13 +3,9 @@
 #include "include/paging.h"
 #include "include/idt.h"
 #include "include/keyboard.h"
+#include "include/sched.h"
+#include "include/time.h"
 
-void set_timer_frequency(int hz) {
-    int divisor = 1193180 / hz; // 1.19318 mhz
-    outb(PIT_COMMAND, 0x36);
-    outb(PIT_DATA0, divisor & 0xFF);
-    outb(PIT_DATA0, (divisor >> 8) & 0xFF);
-}
 
 void kernel_main(){
     clear();
@@ -29,8 +25,10 @@ void kernel_main(){
     new_line();
     println("Welcome to LiteBSD!!!", VGA_COLOR_WHITE);
 
+    sched_init();
+    create_task(shell);
+
     asm volatile("sti");
-    shell();
     
     for(;;){
         asm volatile("hlt");

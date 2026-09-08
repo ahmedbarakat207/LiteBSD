@@ -2,9 +2,9 @@
 #include "include/tty.h"
 #include "include/keyboard.h"
 #include "include/sched.h"
+#include "include/time.h"
 
 extern const unsigned long isr_stub_table[256];
-volatile unsigned int timer_ticks = 0;
 
 struct idt_entry {
     unsigned short base_low;
@@ -92,7 +92,7 @@ struct interrupt_frame *isr_common_handler(void *raw_frame){
 
 struct interrupt_frame *irq_handler(unsigned int irq_num, struct interrupt_frame *frame){
     if(irq_num == 0){
-        timer_ticks++;
+        timer_tick();
         frame = schedule(frame);
         // test
         //if (timer_ticks % 100 == 0) println("[TIMER] Timer tick.", VGA_COLOR_CYAN);

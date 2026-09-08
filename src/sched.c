@@ -71,6 +71,10 @@ int create_task(void (*entry)(void)){
     return task->pid;
 }
 
+void yield() {
+    asm volatile("int $0x20"); 
+}
+
 // i should schedule my time too
 struct interrupt_frame *schedule(struct interrupt_frame *frame){
     if (!ready_queue){
