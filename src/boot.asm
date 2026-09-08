@@ -143,6 +143,7 @@ isr_common_stub:
     push esp             ; pointer to stack frame to C
     call isr_common_handler
     add esp, 4
+    mov esp, eax         ; switch to the selected task's frame
 
     pop gs
     pop fs

@@ -16,16 +16,20 @@ void kernel_main(){
     gdt_init();
     idt_init();
     paging_init();
+
     pic_remap();
-    outb(PIC1_DATA, 0xFC); // enable IRQ0 (timer) and IRQ1 (keyboard)
-    outb(PIC2_DATA, 0xFF); // keep slave PIC IRQs masked
+    outb(PIC1_DATA, 0xFC); 
+    outb(PIC2_DATA, 0xFF); 
+
     set_timer_frequency(100);
     keyboard_init();
-    asm volatile("sti");
+
     println("[KERNEL] Kernel initialized.", VGA_COLOR_GREEN);
     new_line();
     new_line();
     println("Welcome to LiteBSD!!!", VGA_COLOR_WHITE);
+
+    asm volatile("sti");
     shell();
     
     for(;;){

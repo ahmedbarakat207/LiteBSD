@@ -1,6 +1,7 @@
 #include "include/idt.h"
 #include "include/tty.h"
 #include "include/keyboard.h"
+#include "include/sched.h"
 
 extern const unsigned long isr_stub_table[256];
 volatile unsigned int timer_ticks = 0;
@@ -21,8 +22,9 @@ struct idt_ptr {
 struct idt_entry idt[256];
 struct idt_ptr idtp;
 
+// tbh i don't why in the actual fuck this thing here but the code won't want to compile without it so idc
 void isr_handler(void);
-void irq_handler(unsigned int irq_num);
+struct interrupt_frame *irq_handler(unsigned int irq_num, struct interrupt_frame *frame);
 
 void idt_set_gate(unsigned char num, unsigned long base, unsigned short sel, unsigned char flags){
     idt[num].base_low = (base & 0xFFFF);
@@ -43,33 +45,6 @@ void idt_init(){
 
     asm volatile("lidtl (%0)" : : "r"(&idtp));
     println("[IDT] IDT initialized.", VGA_COLOR_GREEN);
-}
-
-struct interrupt_frame {
-    unsigned int gs;
-    unsigned int fs;
-    unsigned int es;
-    unsigned int ds;
-    unsigned int edi;
-    unsigned int esi;
-    unsigned int ebp;
-    unsigned int saved_esp;
-    unsigned int ebx;
-    unsigned int edx;
-    unsigned int ecx;
-    unsigned int eax;
-    unsigned int interrupt_number;
-    unsigned int error_code;
-};
-
-void isr_common_handler(void *raw_frame){
-    struct interrupt_frame *frame = raw_frame;
-
-    if(frame->interrupt_number >= 32 && frame->interrupt_number < 48){
-        irq_handler(frame->interrupt_number - 32);
-    } else if(frame->interrupt_number < 32){
-        isr_handler();
-    }
 }
 
 void pic_remap(){
@@ -105,9 +80,20 @@ void isr_handler(){
     err("CPU Exception occurred.");
 }
 
-void irq_handler(unsigned int irq_num){
+struct interrupt_frame *isr_common_handler(void *raw_frame){
+    struct interrupt_frame *frame = (struct interrupt_frame*)raw_frame;
+    if(frame->interrupt_number >= 32 && frame->interrupt_number < 48){
+        return irq_handler(frame->interrupt_number - 32, frame);
+    } else if(frame->interrupt_number < 32){
+        isr_handler();
+    }
+    return frame;
+}
+
+struct interrupt_frame *irq_handler(unsigned int irq_num, struct interrupt_frame *frame){
     if(irq_num == 0){
         timer_ticks++;
+        frame = schedule(frame);
         // test
         //if (timer_ticks % 100 == 0) println("[TIMER] Timer tick.", VGA_COLOR_CYAN);
 
@@ -120,4 +106,5 @@ void irq_handler(unsigned int irq_num){
         outb(PIC2_COMMAND, 0x20);
     }
     outb(PIC1_COMMAND, 0x20);
+    return frame;
 }
