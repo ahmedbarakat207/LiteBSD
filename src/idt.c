@@ -3,6 +3,7 @@
 #include "include/keyboard.h"
 #include "include/sched.h"
 #include "include/time.h"
+#include "include/syscall.h"
 
 extern const unsigned long isr_stub_table[256];
 
@@ -22,7 +23,7 @@ struct idt_ptr {
 struct idt_entry idt[256];
 struct idt_ptr idtp;
 
-// tbh i don't why in the actual fuck this thing here but the code won't want to compile without it so idc
+// tbh i don't why in the actual fuck this thing is here but the code won't want to compile without it so idc
 void isr_handler(void);
 struct interrupt_frame *irq_handler(unsigned int irq_num, struct interrupt_frame *frame);
 
@@ -40,7 +41,11 @@ void idt_init(){
     idtp.base = (unsigned int)&idt;
 
     for(int i = 0; i < 256; i++){
-        idt_set_gate(i, isr_stub_table[i], 0x08, 0x8E);
+        unsigned char flags = 0x8E; // ring 0
+        if (i == 0x80) {
+            flags = 0xEE; // ring 3
+        }
+        idt_set_gate(i, isr_stub_table[i], 0x08, flags);
     }
 
     asm volatile("lidtl (%0)" : : "r"(&idtp));
@@ -80,11 +85,14 @@ void isr_handler(){
     err("CPU Exception occurred.");
 }
 
-struct interrupt_frame *isr_common_handler(void *raw_frame){
+struct interrupt_frame *isr_common_handler(void *raw_frame) {
     struct interrupt_frame *frame = (struct interrupt_frame*)raw_frame;
-    if(frame->interrupt_number >= 32 && frame->interrupt_number < 48){
+    if (frame->interrupt_number == 0x80) {
+        syscall_handler(frame);
+        return frame; // return same frame
+    } else if (frame->interrupt_number >= 32 && frame->interrupt_number < 48) {
         return irq_handler(frame->interrupt_number - 32, frame);
-    } else if(frame->interrupt_number < 32){
+    } else if (frame->interrupt_number < 32) {
         isr_handler();
     }
     return frame;

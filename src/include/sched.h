@@ -7,8 +7,10 @@ typedef struct task {
     struct interrupt_frame *frame;
     void *stack_base;
     struct task *next;
+    uint8_t user; // user mode
 } task_t;
 
 void sched_init();
 int create_task(void (*entry)(void));
 struct interrupt_frame *schedule(struct interrupt_frame *frame);
+uint32_t scheduler_current_pid(void);
