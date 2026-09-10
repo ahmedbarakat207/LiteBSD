@@ -27,7 +27,6 @@ static int strings_equal(const char *left, const char *right){
     }
     return *left == *right;
 }
-
 // awful .length()
 static int string_length(const char *value){
     int length = 0;

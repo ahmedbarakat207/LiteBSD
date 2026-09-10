@@ -83,7 +83,7 @@ The interesting bits:
 
 - **fork is vfork.** `fork_task` copies the 4K kernel stack, gives the kid its own user-stack *copy* (with `useresp`/`ebp` shifted by the delta, and only if they actually pointed inside the old stack — shifting blindly used to corrupt heap `ebp`s), but the heap is *shared* and the parent goes `TASK_BLOCKED` until the kid execs or exits. Copying the heap was tried; it leaves stale pointers everywhere (`malloc`'s free list, `argv` strings) and leaks 1M per fork. The syscall handler runs the kid first on fork return so the parent can't touch shared state mid-flight.
 - **wait4 rewind trick.** If there's nothing to reap and no `WNOHANG`, `wait4` returns `-2`, and the handler rewinds `eip -= 2` (an `int $0x80` is exactly 2 bytes: `CD 80`) and reschedules, so the parent transparently retries the syscall later. Nasty, works.
-- **exec drops argv.** `sys_execve_impl` loads ELF segments to `USER_LOAD_ADDR`, zeroes bss tails, makes a fresh zeroed 16K stack, sets `eip/esp/useresp`, and returns. It does *not* push `argc/argv/envp` — `crt0` sees `argc <= 0` and falls back to running `sh`. Fine for the init shell, lossy for everything else.
+- **exec forwards argv/envp.** `sys_execve_impl` snapshots argv/envp into `kmalloc`'d buffers *before* wiping `USER_LOAD_ADDR` (the strings may live in the old image), loads ELF segments, zeroes bss tails, then builds the standard i386 stack (`argc`, `argv`, `envp`, strings — the layout `crt0` already expects) on a fresh 16K stack and sets `eip/esp/useresp`. Caps: 64 args / 64 env, 1K per string, 8K total; oversize or malformed vectors fail with `-1` and leave the old image intact.
 - **Faults kill, they don't hang.** A ring-3 fault (`cs == 0x1B`) marks the task `ZOMBIE` exit `128+11`, wakes a blocked parent, and schedules away. A kernel-mode fault still `cli; hlt`s, because at that point something is deeply wrong and pretending otherwise helps nobody. If the dead task was the init shell (`ppid == 0`), `respawn_user_shell()` starts a fresh one so the box stays usable.
 - **One shell owns the keyboard.** The old kernel debug `shell()` used to race hush for scancodes *and* interleave scheduling around fork+exec, which is part of how parents ended up corrupted after failed execs. It's still in `tty.c` but no longer started; only hush reads input now.
 
@@ -114,7 +114,7 @@ There is no disk driver. The filesystem is a linked list of `vfs_node`s holding 
 ## Userspace
 
 - **c-lite** (`libc/` submodule): `crt0.asm`, raw `int $0x80` wrappers, `malloc` over `brk`, stdio, string, `dirent` speaking the custom getdents layout, plus compat shims. BusyBox links against it statically (`-nostdlib`, `-Ttext,0x8000000`).
-- **BusyBox 1.36.1** with a small config: `hush` (`SH_IS_HUSH`, `BASH_IS_HUSH`, standalone + nofork), and applets `cat echo ls mkdir pwd clear kill sleep test true false printf bash`. `busybox.patch` flips `ls`/`cat` to `APPLET_NOFORK` so they run in-process (no fork+exec round trip through a loader that drops argv anyway), fixes a link-line quoting bug in `trylink`, and drops libm.
+- **BusyBox 1.36.1** with a small config: `hush` (`SH_IS_HUSH`, `BASH_IS_HUSH`, standalone + nofork), and applets `cat echo ls mkdir pwd clear kill sleep test true false printf bash`. `busybox.patch` flips `ls`/`cat` to `APPLET_NOFORK` so they run in-process (no fork+exec round trip), fixes a link-line quoting bug in `trylink`, and drops libm.
 
 ## Debugging
 
@@ -131,11 +131,11 @@ Run QEMU with `-serial file:serial.log` (or `-serial stdio`) and drive it headle
 ## Honest limitations
 
 - No memory isolation at all. Every task shares USER code/data/bss and the kernel heap. `fork` without an MMU can't give the kid private globals at the same virtual addresses, so hush's fork path (which assumes copy semantics) pollutes shared state. The vfork discipline + fault containment keeps the box alive, but a failed exec still kills that shell instance and respawns a fresh one — you'll lose `cwd`.
-- `exec` ignores `argv`/`envp`. Non-`sh` programs always start as `sh`. Pipes/dup work at the fd level; job control doesn't exist.
+- `exec` forwards `argv`/`envp`, but fork+exec of an external binary still shares USER text/data/bss with the blocked parent, so commands like `sleep` can fault the shell and trigger a respawn (NOFORK applets are unaffected). Pipes/dup work at the fd level; job control doesn't exist.
 - `wait4`'s `-2`/rewind and the `eip -= 2` assume the syscall instruction — true today, fragile forever.
 - `kmalloc` has no locking; it survives because syscalls run with IF clear, but it's one `sti` in the wrong place away from corruption.
 - The user heap is a fixed 1M window per task and `wait4` never frees shared heaps — long sessions leak.
 
-Roadmap, roughly: per-process address spaces (then real fork, real exec with argv, and deleting half the hacks above), a disk driver so VFS outlives boot, signals past SIGKILL, and growing the applet set once exec actually forwards arguments.
+Roadmap, roughly: per-process address spaces (then real fork and deleting half the hacks above), a disk driver so VFS outlives boot, signals past SIGKILL, and growing the applet set (argv forwarding is done; private per-process globals are the next blocker for external commands).
 
 MIT, (c) 2026 Ahmed Barakat.

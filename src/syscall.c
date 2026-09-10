@@ -37,7 +37,13 @@ static int sys_chdir(uint32_t path, uint32_t unused1, uint32_t unused2);
 static int sys_getcwd(uint32_t buffer, uint32_t size, uint32_t unused1);
 static int sys_getdents(uint32_t fd, uint32_t buf, uint32_t bufsize);
 
-static int sys_execve_impl(struct interrupt_frame *frame, uint32_t path);
+static int sys_execve_impl(struct interrupt_frame *frame, uint32_t path, uint32_t argv_u, uint32_t envp_u);
+
+#define EXEC_MAX_ARGS 64
+#define EXEC_MAX_ENVS 64
+#define EXEC_MAX_STRLEN 1024
+#define EXEC_MAX_TOTAL 8192
+#define EXEC_STACK_SIZE 16384
 
 typedef int (*syscall_func_t)(uint32_t, uint32_t, uint32_t);
 
@@ -218,16 +224,106 @@ static int sys_execve(uint32_t path, uint32_t argv, uint32_t envp){
     if (!syscall_string_valid(path)) return -1;
     if (argv && !syscall_range_valid(argv, sizeof(uint32_t))) return -1;
     if (envp && !syscall_range_valid(envp, sizeof(uint32_t))) return -1;
-    return sys_execve_impl(current_syscall_frame, path);
+    return sys_execve_impl(current_syscall_frame, path, argv, envp);
 }
 
-static int sys_execve_impl(struct interrupt_frame *frame, uint32_t path) {
+// length of a user string, per-byte validated, bounded. 0 on success.
+static int exec_user_strlen(uint32_t uaddr, uint32_t *out_len){
+    for (uint32_t i = 0; i < EXEC_MAX_STRLEN; i++) {
+        if (!syscall_range_valid(uaddr + i, 1)) return -1;
+        if (((const char*)uaddr)[i] == '\0') {
+            *out_len = i;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+// copy a user argv/envp vector into kmalloc'd kernel buffers.
+// must run before the USER image is wiped, since the strings may live there.
+static int exec_copy_vec(uint32_t uvec, char **kbufs, uint32_t *klens, int max, uint32_t *out_count, uint32_t *out_total){
+    uint32_t count = 0;
+    uint32_t total = 0;
+    if (uvec == 0) {
+        *out_count = 0;
+        *out_total = 0;
+        return 0;
+    }
+    for (int i = 0; i < max; i++) {
+        if (!syscall_range_valid(uvec + (uint32_t)i * 4, 4)) goto fail;
+        uint32_t a = ((uint32_t*)uvec)[i];
+        if (a == 0) break;
+        uint32_t len = 0;
+        if (exec_user_strlen(a, &len) != 0) goto fail;
+        if (total + len + 1 > EXEC_MAX_TOTAL) goto fail;
+        char *k = (char*)kmalloc(len + 1);
+        if (!k) goto fail;
+        for (uint32_t j = 0; j <= len; j++) k[j] = ((const char*)a)[j];
+        kbufs[count] = k;
+        klens[count] = len;
+        count++;
+        total += len + 1;
+    }
+    if (count == (uint32_t)max) {
+        // ran off the end without seeing NULL, malformed vector
+        if (!syscall_range_valid(uvec + (uint32_t)max * 4, 4)) goto fail;
+        if (((uint32_t*)uvec)[max] != 0) goto fail;
+    }
+    *out_count = count;
+    *out_total = total;
+    return 0;
+fail:
+    for (uint32_t i = 0; i < count; i++) kfree(kbufs[i]);
+    return -1;
+}
+
+static void exec_free_vec(char **kbufs, uint32_t count){
+    for (uint32_t i = 0; i < count; i++) kfree(kbufs[i]);
+}
+
+static int sys_execve_impl(struct interrupt_frame *frame, uint32_t path, uint32_t argv_u, uint32_t envp_u) {
     print("[EXECVE] Executing: ", VGA_COLOR_LIGHT_GREEN);
     println((const char*)path, VGA_COLOR_LIGHT_GREEN);
+
+    // snapshot args first: they may point into the image/stack we are about to replace
+    char *arg_bufs[EXEC_MAX_ARGS];
+    uint32_t arg_lens[EXEC_MAX_ARGS];
+    char *env_bufs[EXEC_MAX_ENVS];
+    uint32_t env_lens[EXEC_MAX_ENVS];
+    uint32_t argc = 0, envc = 0, arg_total = 0, env_total = 0;
+    if (exec_copy_vec(argv_u, arg_bufs, arg_lens, EXEC_MAX_ARGS, &argc, &arg_total) != 0) {
+        println("[EXECVE] Bad argv", VGA_COLOR_RED);
+        return -1;
+    }
+    if (exec_copy_vec(envp_u, env_bufs, env_lens, EXEC_MAX_ENVS, &envc, &env_total) != 0) {
+        exec_free_vec(arg_bufs, argc);
+        println("[EXECVE] Bad envp", VGA_COLOR_RED);
+        return -1;
+    }
+    uint32_t nwords = 1 + (argc + 1) + (envc + 1);
+    if (arg_total + env_total + nwords * 4 + 64 > EXEC_STACK_SIZE - 128) {
+        exec_free_vec(arg_bufs, argc);
+        exec_free_vec(env_bufs, envc);
+        println("[EXECVE] Args too big", VGA_COLOR_RED);
+        return -1;
+    }
+
+    uint32_t *stack = (uint32_t*)kmalloc(EXEC_STACK_SIZE);
+    if (!stack) {
+        exec_free_vec(arg_bufs, argc);
+        exec_free_vec(env_bufs, envc);
+        return -1;
+    }
+    for (int i = 0; i < EXEC_STACK_SIZE / 4; i++) stack[i] = 0;
+    uint32_t stack_top = (uint32_t)stack + EXEC_STACK_SIZE - 64;
+    stack_top &= ~0x0F;
 
     struct vfs_node *node = vfs_open((const char*)path, 0);
     if (!node) {
         println("[EXECVE] vfs_open failed!", VGA_COLOR_RED);
+        kfree(stack);
+        exec_free_vec(arg_bufs, argc);
+        exec_free_vec(env_bufs, envc);
         return -1;
     }
 
@@ -235,11 +331,17 @@ static int sys_execve_impl(struct interrupt_frame *frame, uint32_t path) {
     if (vfs_read(node, 0, header, 52) != 52) {
         println("[EXECVE] Failed to read header", VGA_COLOR_RED);
         vfs_close(node);
+        kfree(stack);
+        exec_free_vec(arg_bufs, argc);
+        exec_free_vec(env_bufs, envc);
         return -1;
     }
     if (header[0] != 0x7F || header[1] != 'E' || header[2] != 'L' || header[3] != 'F') {
         println("[EXECVE] Not an ELF binary", VGA_COLOR_RED);
         vfs_close(node);
+        kfree(stack);
+        exec_free_vec(arg_bufs, argc);
+        exec_free_vec(env_bufs, envc);
         return -1;
     }
 
@@ -256,7 +358,11 @@ static int sys_execve_impl(struct interrupt_frame *frame, uint32_t path) {
     for (uint16_t i = 0; i < phnum; i++) {
         unsigned char ph[32];
         if (vfs_read(node, phoff + i * phentsize, ph, 32) != 32) {
-            vfs_close(node); return -1;
+            vfs_close(node);
+            kfree(stack);
+            exec_free_vec(arg_bufs, argc);
+            exec_free_vec(env_bufs, envc);
+            return -1;
         }
         uint32_t p_type = *(uint32_t*)&ph[0];
         uint32_t p_offset = *(uint32_t*)&ph[4];
@@ -280,11 +386,39 @@ static int sys_execve_impl(struct interrupt_frame *frame, uint32_t path) {
     }
 
     vfs_close(node);
-    uint32_t *stack = (uint32_t*)kmalloc(16384);
-    if (!stack) return -1;
-    for (int i = 0; i < 16384 / 4; i++) stack[i] = 0;
-    uint32_t stack_top = (uint32_t)stack + 16384 - 64;
-    stack_top &= ~0x0F;
+
+    // standard i386 layout the crt0 already expects:
+    // [esp]=argc, [esp+4]=argv[0..argc,NULL], then envp[0..envc,NULL], strings above
+    uint32_t arg_addrs[EXEC_MAX_ARGS];
+    uint32_t env_addrs[EXEC_MAX_ENVS];
+    uint32_t sp = stack_top;
+    for (int i = (int)argc - 1; i >= 0; i--) {
+        sp -= arg_lens[i] + 1;
+        for (uint32_t j = 0; j <= arg_lens[i]; j++) ((char*)sp)[j] = arg_bufs[i][j];
+        arg_addrs[i] = sp;
+    }
+    for (int i = (int)envc - 1; i >= 0; i--) {
+        sp -= env_lens[i] + 1;
+        for (uint32_t j = 0; j <= env_lens[i]; j++) ((char*)sp)[j] = env_bufs[i][j];
+        env_addrs[i] = sp;
+    }
+    exec_free_vec(arg_bufs, argc);
+    exec_free_vec(env_bufs, envc);
+    sp -= nwords * 4;
+    sp &= ~0x0F;
+    if (sp < (uint32_t)stack + 64) {
+        println("[EXECVE] Stack overflow", VGA_COLOR_RED);
+        kfree(stack);
+        return -1;
+    }
+    {
+        uint32_t *w = (uint32_t*)sp;
+        w[0] = argc;
+        for (uint32_t i = 0; i < argc; i++) w[1 + i] = arg_addrs[i];
+        w[1 + argc] = 0;
+        for (uint32_t i = 0; i < envc; i++) w[1 + argc + 1 + i] = env_addrs[i];
+        w[1 + argc + 1 + envc] = 0;
+    }
 
     task_t *task = scheduler_current_task();
     if (task) {
@@ -307,8 +441,9 @@ static int sys_execve_impl(struct interrupt_frame *frame, uint32_t path) {
     }
 
     frame->eip = entry;
-    frame->esp = stack_top;
-    frame->useresp = stack_top;
+    frame->esp = sp;
+    frame->useresp = sp;
+    frame->ebp = 0;
     frame->eax = 0;
 
     return 0;
