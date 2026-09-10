@@ -5,13 +5,18 @@ ISO_DIR := $(BUILD_DIR)/iso
 CC := i686-elf-gcc
 LD := i686-elf-ld
 NASM := nasm
-GRUB_MKRESCUE ?= $(shell command -v grub-mkrescue 2>/dev/null || command -v i686-elf-grub-mkrescue 2>/dev/null)
+XORRISO ?= xorriso
+
+SYSLINUX_VERSION := 6.03
+SYSLINUX_TARBALL := $(BUILD_DIR)/syslinux-$(SYSLINUX_VERSION).tar.gz
+SYSLINUX_URL := https://mirrors.edge.kernel.org/pub/linux/utils/boot/syslinux/syslinux-$(SYSLINUX_VERSION).tar.gz
+SYSLINUX_SRC := $(BUILD_DIR)/syslinux-$(SYSLINUX_VERSION)
 
 CFLAGS := -std=gnu11 -ffreestanding -O2 -Wall -Wextra -m32 \
 	-fno-pie -fno-stack-protector -fno-builtin
 LDFLAGS := -m elf_i386 -T linker.ld
 
-.PHONY: all clean iso run-iso libc busybox initrd run
+.PHONY: all clean iso run-iso syslinux libc busybox initrd run
 
 all: $(BUILD_DIR)/$(TARGET) busybox initrd
 
@@ -118,12 +123,67 @@ $(BUILD_DIR)/initrd.o: src/initrd.c src/include/initrd.h src/include/vfs.h src/i
 $(BUILD_DIR)/$(TARGET): $(BUILD_DIR)/boot.o $(BUILD_DIR)/kernel.o $(BUILD_DIR)/tty.o $(BUILD_DIR)/paging.o $(BUILD_DIR)/gdt.o $(BUILD_DIR)/idt.o $(BUILD_DIR)/keyboard.o $(BUILD_DIR)/heap.o $(BUILD_DIR)/time.o $(BUILD_DIR)/vfs.o $(BUILD_DIR)/sched.o $(BUILD_DIR)/syscall.o $(BUILD_DIR)/initrd.o linker.ld
 	$(LD) $(LDFLAGS) -o $@ $(BUILD_DIR)/boot.o $(BUILD_DIR)/kernel.o $(BUILD_DIR)/tty.o $(BUILD_DIR)/paging.o $(BUILD_DIR)/gdt.o $(BUILD_DIR)/idt.o $(BUILD_DIR)/keyboard.o $(BUILD_DIR)/heap.o $(BUILD_DIR)/time.o $(BUILD_DIR)/vfs.o $(BUILD_DIR)/sched.o $(BUILD_DIR)/syscall.o $(BUILD_DIR)/initrd.o
 
+syslinux: $(SYSLINUX_SRC)/bios/core/isolinux.bin
+
+$(SYSLINUX_SRC)/bios/core/isolinux.bin:
+	mkdir -p $(BUILD_DIR)
+	if [ ! -f $(SYSLINUX_TARBALL) ]; then \
+		echo "Fetching syslinux $(SYSLINUX_VERSION)..."; \
+		curl -sL -o $(SYSLINUX_TARBALL) $(SYSLINUX_URL); \
+	fi
+	tar -xzf $(SYSLINUX_TARBALL) -C $(BUILD_DIR)
+
 iso: $(BUILD_DIR)/$(TARGET) initrd
-	mkdir -p $(ISO_DIR)/boot/grub
+	rm -rf $(ISO_DIR)
+	mkdir -p $(ISO_DIR)/boot $(ISO_DIR)/isolinux
 	cp $(BUILD_DIR)/$(TARGET) $(ISO_DIR)/boot/kernel
 	cp $(BUILD_DIR)/initrd.tar $(ISO_DIR)/boot/initrd.tar
-	cp grub.cfg $(ISO_DIR)/boot/grub/grub.cfg
-	$(GRUB_MKRESCUE) -o $(BUILD_DIR)/$(TARGET).iso $(ISO_DIR)
+	cp isolinux.cfg $(ISO_DIR)/isolinux/isolinux.cfg
+	ISOLINUX_BIN=""; MBOOT=""; LDLINUX=""; LIBCOM32=""; LIBUTIL=""; ISOHDPFX=""; \
+	for f in /usr/lib/ISOLINUX/isolinux.bin /usr/share/syslinux/isolinux.bin; do \
+		if [ -f "$$f" ]; then ISOLINUX_BIN="$$f"; break; fi; \
+	done; \
+	for f in /usr/lib/syslinux/modules/bios/mboot.c32 /usr/share/syslinux/mboot.c32; do \
+		if [ -f "$$f" ]; then MBOOT="$$f"; break; fi; \
+	done; \
+	for f in /usr/lib/syslinux/modules/bios/ldlinux.c32 /usr/share/syslinux/ldlinux.c32; do \
+		if [ -f "$$f" ]; then LDLINUX="$$f"; break; fi; \
+	done; \
+	for f in /usr/lib/syslinux/modules/bios/libcom32.c32 /usr/share/syslinux/libcom32.c32; do \
+		if [ -f "$$f" ]; then LIBCOM32="$$f"; break; fi; \
+	done; \
+	for f in /usr/lib/syslinux/modules/bios/libutil.c32 /usr/share/syslinux/libutil.c32; do \
+		if [ -f "$$f" ]; then LIBUTIL="$$f"; break; fi; \
+	done; \
+	for f in /usr/lib/ISOLINUX/isohdpfx.bin /usr/lib/syslinux/mbr/isohdpfx.bin /usr/share/syslinux/isohdpfx.bin; do \
+		if [ -f "$$f" ]; then ISOHDPFX="$$f"; break; fi; \
+	done; \
+	if [ -z "$$ISOLINUX_BIN" ] || [ -z "$$MBOOT" ] || [ -z "$$LDLINUX" ]; then \
+		echo "Syslinux not found on host, using pinned syslinux $(SYSLINUX_VERSION)..."; \
+		$(MAKE) $(SYSLINUX_SRC)/bios/core/isolinux.bin; \
+		ISOLINUX_BIN="$(SYSLINUX_SRC)/bios/core/isolinux.bin"; \
+		MBOOT="$(SYSLINUX_SRC)/bios/com32/mboot/mboot.c32"; \
+		LDLINUX="$(SYSLINUX_SRC)/bios/com32/elflink/ldlinux/ldlinux.c32"; \
+		LIBCOM32="$(SYSLINUX_SRC)/bios/com32/lib/libcom32.c32"; \
+		LIBUTIL="$(SYSLINUX_SRC)/bios/com32/libutil/libutil.c32"; \
+		ISOHDPFX="$(SYSLINUX_SRC)/bios/mbr/isohdpfx.bin"; \
+	fi; \
+	cp "$$ISOLINUX_BIN" $(ISO_DIR)/isolinux/isolinux.bin; \
+	cp "$$MBOOT" $(ISO_DIR)/isolinux/mboot.c32; \
+	cp "$$LDLINUX" $(ISO_DIR)/isolinux/ldlinux.c32; \
+	if [ -n "$$LIBCOM32" ] && [ -f "$$LIBCOM32" ]; then cp "$$LIBCOM32" $(ISO_DIR)/isolinux/libcom32.c32; fi; \
+	if [ -n "$$LIBUTIL" ] && [ -f "$$LIBUTIL" ]; then cp "$$LIBUTIL" $(ISO_DIR)/isolinux/libutil.c32; fi; \
+	if ! command -v $(XORRISO) >/dev/null 2>&1; then \
+		echo "error: $(XORRISO) not found (brew install xorriso / apt install xorriso)"; exit 1; \
+	fi; \
+	HYBRID=""; \
+	if [ -n "$$ISOHDPFX" ] && [ -f "$$ISOHDPFX" ]; then HYBRID="-isohybrid-mbr $$ISOHDPFX"; fi; \
+	$(XORRISO) -as mkisofs -o $(BUILD_DIR)/$(TARGET).iso \
+		-iso-level 3 -J -R -l \
+		-b isolinux/isolinux.bin -c isolinux/boot.cat \
+		-no-emul-boot -boot-load-size 4 -boot-info-table \
+		$$HYBRID \
+		$(ISO_DIR)
 
 run-iso: iso
 	qemu-system-i386 -m 512M -cdrom $(BUILD_DIR)/$(TARGET).iso

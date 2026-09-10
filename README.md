@@ -6,14 +6,14 @@ No, it's not BSD. The name is aspirational.
 
 ## Boot it
 
-You need `i686-elf-gcc`, `nasm`, `qemu-system-i386`, and GRUB tools for the ISO target. Then:
+You need `i686-elf-gcc`, `nasm`, `qemu-system-i386`, and `xorriso` for the ISO target. Syslinux 6.03 binaries are fetched automatically on first `make iso` (no install needed), or reused from `/usr/lib/ISOLINUX` + `/usr/lib/syslinux` if already present. Then:
 
 ```
 git submodule update --init
 make run
 ```
 
-That builds the kernel, rebuilds libc + busybox if needed, packs `build/initrd.tar`, and boots QEMU with `-kernel` + `-initrd`. You should land in `LiteBSD:/root#` (hush). `make run-iso` does the same thing off a GRUB ISO instead.
+That builds the kernel, rebuilds libc + busybox if needed, packs `build/initrd.tar`, and boots QEMU with `-kernel` + `-initrd`. You should land in `LiteBSD:/root#` (hush). `make run-iso` does the same thing off a Syslinux/ISOLINUX ISO instead.
 
 Other targets: `make libc`, `make busybox`, `make initrd`, `make iso`, `make clean`. `make all` is kernel + busybox + initrd.
 
@@ -34,7 +34,7 @@ src/keyboard.c    PS/2 scancode → 256-byte ring buffer
 src/tty.c         VGA text driver + ANSI swallowing + kernel debug shell
 src/time.c        PIT @100Hz
 linker.ld         kernel linked at 1M, ENTRY(start)
-grub.cfg          multiboot + initrd.tar as module
+isolinux.cfg      ISOLINUX + mboot.c32: kernel as multiboot, initrd.tar as module
 libc/             c-lite submodule: crt0, syscalls, malloc, stdio, dirent...
 busybox/          upstream busybox submodule + busybox.patch
 busybox.config    the actual busybox config (hush, ~15 applets, static)
@@ -42,7 +42,7 @@ busybox.config    the actual busybox config (hush, ~15 applets, static)
 
 ## Boot sequence
 
-1. GRUB loads the kernel at 1M (`linker.ld`: `. = 1M`) and passes the multiboot info pointer in `ebx`. `boot.asm:start` does `cli`, sets `esp` to an 8K stack, installs the flat GDT, pushes `ebx`, calls `kernel_main`.
+1. ISOLINUX (`isolinux.bin` + `mboot.c32`, built into the ISO by `make iso` via `xorriso`) loads the kernel at 1M (`linker.ld`: `. = 1M`) and passes the multiboot info pointer in `ebx`. `boot.asm:start` does `cli`, sets `esp` to an 8K stack, installs the flat GDT, pushes `ebx`, calls `kernel_main`.
 2. `kernel_main` clears VGA, inits GDT → IDT → paging, then reads the first multiboot module (`initrd.tar`) and hands it to `initrd_load`, which walks the ustar archive and creates every file/dir in the VFS before any task exists.
 3. PIC gets remapped (0x20/0x28) and then masked to `0xFC` — only IRQ0 (timer) and IRQ1 (keyboard) stay unmasked. PIT runs at 100Hz.
 4. `create_user_task(user_init)` builds the first ring-3 task. `user_init` tries `execve("/bin/sh")`, falls back to `/bin/busybox sh -i`, and if both fail it prints and exits. Then `sti` + idle loop. From here on everything is timer-driven.
