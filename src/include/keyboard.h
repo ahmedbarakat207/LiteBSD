@@ -1,6 +1,9 @@
 void keyboard_init();
 void keyboard_handler();
 char getchar();
+int keyboard_available();
+int keyboard_trygetc();
+void keyboard_flush();
 
 #define KEYBOARD_DATA_PORT 0x60
 #define KEYBOARD_STATUS_PORT 0x64

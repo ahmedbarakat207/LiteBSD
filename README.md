@@ -30,8 +30,8 @@ src/sched.c       round-robin tasks, fork, wait4, exit
 src/syscall.c     int 0x80 dispatch + all 26 syscalls + ELF loader
 src/vfs.c         path resolution + node list + getdents
 src/initrd.c      ustar parser that populates the VFS at boot
-src/keyboard.c    PS/2 scancode → 256-byte ring buffer
-src/tty.c         VGA text driver + ANSI swallowing + kernel debug shell
+src/keyboard.c    PS/2 scancode → 256-byte ring buffer (+ shift tracking, nonblocking peek)
+src/tty.c         VGA text driver + ANSI subset (cup/clear/standout/altscreen) + console termios
 src/time.c        PIT @100Hz
 linker.ld         kernel linked at 1M, ENTRY(start)
 isolinux.cfg      ISOLINUX + mboot.c32: kernel as multiboot, initrd.tar as module
@@ -89,19 +89,26 @@ The interesting bits:
 
 ## Syscalls
 
-`int $0x80`, number in `eax`, args in `ebx/ecx/edx`. Numbers 1–26:
+`int $0x80`, number in `eax`, args in `ebx/ecx/edx`. Numbers 1–29:
 
 ```
 1 write   2 read    3 exit    4 getpid  5 fork    6 execve  7 wait4
 8 getppid 9 brk     10 mmap   11 munmap 12 pipe   13 dup    14 dup2
-15 kill (only SIGKILL/9 does anything)  16 ioctl (stub, -1)
+15 kill (only SIGKILL/9 does anything)  16 ioctl (console only, see below)
 17 open    18 close  19 lseek  20 stat   21 fstat  22 unlink 23 mkdir
-24 chdir  25 getcwd  26 getdents (custom)
+24 chdir  25 getcwd  26 getdents (custom) 27 ftruncate 28 poll
+29 uname
 ```
 
 `getdents` doesn't follow Linux's ABI — it fills the buffer with flat `(ino:u32, reclen:u32, name:NUL)` records, and `libc/src/dirent.c` knows that layout. Validation of user pointers goes through `scheduler_user_range_valid`, which accepts the USER_LOAD region, the task's heap window, the task's stack, and anything under 1M (kernel/rodata, because everything is mapped anyway).
 
 `brk` just moves a pointer inside the preallocated 1M window; `mmap` is `kmalloc` wearing a trenchcoat.
+
+## Terminal
+
+There is one console: PS/2 keyboard in, VGA text out (`80x25`). The kernel keeps a single global termios (`tty.c`): canonical + echo on by default (what hush expects), raw mode via `TCSETS` (what vi switches to). `sys_read` on fd 0 honors it — canonical does line editing with `erase`, raw returns keystrokes immediately with `VMIN` blocking semantics and no echo unless `ECHO` is set. `sys_ioctl` serves console fds only: `TCGETS/TCSETS/TCSETSW/TCSETSF`, `TIOCGWINSZ/TIOCSWINSZ` (default `25x80`), `FIONREAD`, `TCFLSH`. `poll` (28) reports real readiness for console (keys buffered), pipes (bytes/space), and files (always ready), with `0`/timed/infinite waits driven by the 100Hz PIT. libc's `tcgetattr/tcsetattr/tcflush/poll` call through to these (with cooked-mode fallback if the kernel predates them).
+
+VGA understands the ANSI subset fullscreen programs need: `H/f` (cup), `A/B/C/D`, `J` (0/2), `K` (0/2), `m` (0/7 → standout as white-on-black reverse), `s/u`, bell ignored, and `?1049h/l` as a real alternate screen (enter saves + clears, exit restores — quitting vi puts your shell screen back). The keyboard driver tracks shift for capitals and `: ! ?` etc (vi can't `:wq` without `:`).
 
 ## VFS
 
@@ -114,7 +121,7 @@ There is no disk driver. The filesystem is a linked list of `vfs_node`s holding 
 ## Userspace
 
 - **c-lite** (`libc/` submodule): `crt0.asm`, raw `int $0x80` wrappers, `malloc` over `brk`, stdio, string, `dirent` speaking the custom getdents layout, plus compat shims. BusyBox links against it statically (`-nostdlib`, `-Ttext,0x8000000`).
-- **BusyBox 1.36.1** with a small config: `hush` (`SH_IS_HUSH`, `BASH_IS_HUSH`, standalone + nofork), and applets `cat echo ls mkdir pwd clear kill sleep test true false printf bash`. `busybox.patch` flips `ls`/`cat` to `APPLET_NOFORK` so they run in-process (no fork+exec round trip), fixes a link-line quoting bug in `trylink`, and drops libm.
+- **BusyBox 1.36.1** with a small config: `hush` (`SH_IS_HUSH`, `BASH_IS_HUSH`, standalone + nofork), and applets `cat echo ls mkdir pwd clear kill sleep test true false printf bash vi uname` (`vi` minimal: colon commands on, no search/yank/signals/resize). `busybox.patch` flips `ls`/`cat`/`vi` to `APPLET_NOFORK` so they run in-process (no fork+exec round trip), fixes a link-line quoting bug in `trylink`, and drops libm.
 
 ## Debugging
 
@@ -131,7 +138,8 @@ Run QEMU with `-serial file:serial.log` (or `-serial stdio`) and drive it headle
 ## Honest limitations
 
 - No memory isolation at all. Every task shares USER code/data/bss and the kernel heap. `fork` without an MMU can't give the kid private globals at the same virtual addresses, so hush's fork path (which assumes copy semantics) pollutes shared state. The vfork discipline + fault containment keeps the box alive, but a failed exec still kills that shell instance and respawns a fresh one — you'll lose `cwd`.
-- `exec` forwards `argv`/`envp`, but fork+exec of an external binary still shares USER text/data/bss with the blocked parent, so commands like `sleep` can fault the shell and trigger a respawn (NOFORK applets are unaffected). Pipes/dup work at the fd level; job control doesn't exist.
+- `exec` forwards `argv`/`envp`, but fork+exec of an external binary still shares USER text/data/bss with the blocked parent, so commands like `sleep` can fault the shell and trigger a respawn (NOFORK applets, including `vi`, are unaffected). Pipes/dup work at the fd level; job control doesn't exist.
+- Exiting the init shell (`exit`, or quitting `vi` and tripping hush's fd-restore grumble — `can't duplicate file descriptor`, file is saved first) respawns a fresh shell instead of faulting: `sys_exit` on a `ppid == 0` task brings up `user_init` again, same as the fault path. You'll lose `cwd`.
 - `wait4`'s `-2`/rewind and the `eip -= 2` assume the syscall instruction — true today, fragile forever.
 - `kmalloc` has no locking; it survives because syscalls run with IF clear, but it's one `sti` in the wrong place away from corruption.
 - The user heap is a fixed 1M window per task and `wait4` never frees shared heaps — long sessions leak.

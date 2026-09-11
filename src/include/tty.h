@@ -31,7 +31,6 @@ void print_char(char c, char color);
 void print(const char* str, char color);
 
 void println(const char* str, char color);
-
 void print_hex(unsigned int val, char color);
 
 void print_dec(unsigned int val, char color);
@@ -45,3 +44,50 @@ void disable_cursor(void);
 void shell();
 
 void err(const char* msg);
+
+// console termios: layout mirrors libc struct termios (same order/sizes,
+// Linux-compatible flag values) so field copies are ABI-safe.
+#define CON_NCCS 32
+#define CON_VEOF 4
+#define CON_VTIME 5
+#define CON_VMIN 6
+
+#define CON_ISIG 0000001
+#define CON_ICANON 0000002
+#define CON_ECHO 0000010
+#define CON_IEXTEN 0100000
+
+#define CON_TCGETS 0x5401
+#define CON_TCSETS 0x5402
+#define CON_TCSETSW 0x5403
+#define CON_TCSETSF 0x5404
+#define CON_TCFLSH 0x540B
+#define CON_TIOCGWINSZ 0x5413
+#define CON_TIOCSWINSZ 0x5414
+#define CON_FIONREAD 0x541B
+
+struct con_termios {
+    unsigned int c_iflag;
+    unsigned int c_oflag;
+    unsigned int c_cflag;
+    unsigned int c_lflag;
+    unsigned char c_line;
+    unsigned char c_cc[CON_NCCS];
+    unsigned int c_ispeed;
+    unsigned int c_ospeed;
+};
+
+struct con_winsize {
+    unsigned short ws_row;
+    unsigned short ws_col;
+    unsigned short ws_xpixel;
+    unsigned short ws_ypixel;
+};
+
+int cons_is_canonical();
+int cons_echo_on();
+unsigned int cons_cc(int idx);
+void cons_tcget(struct con_termios *out);
+void cons_tcset(const struct con_termios *in);
+void cons_ws_get(struct con_winsize *out);
+void cons_ws_set(const struct con_winsize *in);

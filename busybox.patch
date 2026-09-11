@@ -37,10 +37,10 @@ index 4b34149..e7d2ac2 100644
  
  //kbuild:lib-$(CONFIG_CAT) += cat.o
  
-diff --git a/coreutils/ls.c b/coreutils/ls.c
-index b69b804..6b6dd0a 100644
---- a/coreutils/ls.c
-+++ b/coreutils/ls.c
+ diff --git a/coreutils/ls.c b/coreutils/ls.c
+ index b69b804..6b6dd0a 100644
+ --- a/coreutils/ls.c
+ +++ b/coreutils/ls.c
 @@ -92,7 +92,7 @@
  //config:	configurable, and the output may not be legible on
  //config:	many output screens.
@@ -49,6 +49,19 @@ index b69b804..6b6dd0a 100644
 +//applet:IF_LS(APPLET_NOFORK(ls, ls, BB_DIR_BIN, BB_SUID_DROP, ls))
  
  //kbuild:lib-$(CONFIG_LS) += ls.o
++
++diff --git a/editors/vi.c b/editors/vi.c
++index 0000000..0000000 100644
++--- a/editors/vi.c
+++++ b/editors/vi.c
++@@ -176,7 +176,7 @@
++ //config:	Enable more verbose reporting of the results of yank, change,
++ //config:	delete, undo and substitution commands.
++ 
++-//applet:IF_VI(APPLET(vi, BB_DIR_BIN, BB_SUID_DROP))
+++//applet:IF_VI(APPLET_NOFORK(vi, vi, BB_DIR_BIN, BB_SUID_DROP, vi))
++ 
++ //kbuild:lib-$(CONFIG_VI) += vi.o
  
 diff --git a/scripts/trylink b/scripts/trylink
 index 2255dee..8b846e7 100755

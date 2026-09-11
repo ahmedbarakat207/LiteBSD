@@ -11,6 +11,8 @@
 void idt_init();
 void pic_remap();
 void outb(unsigned short port, unsigned char data);
+void serial_write(const char *s);
+void serial_write_hex(unsigned int v);
 
 struct interrupt_frame {
 	unsigned int gs;

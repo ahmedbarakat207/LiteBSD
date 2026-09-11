@@ -23,7 +23,6 @@ struct idt_ptr {
 struct idt_entry idt[256];
 struct idt_ptr idtp;
 
-// tbh i don't why in the actual fuck this thing is here but the code won't want to compile without it so idc
 void isr_handler(struct interrupt_frame *frame);
 struct interrupt_frame *irq_handler(unsigned int irq_num, struct interrupt_frame *frame);
 static void serial_init(void);
@@ -98,6 +97,21 @@ static void serial_init(void) {
 static void serial_putc(char c) {
     while ((inb(0x3F8 + 5) & 0x20) == 0) { }
     outb(0x3F8, (unsigned char)c);
+}
+
+void serial_write(const char *s) {
+    while (*s) {
+        if (*s == '\n') serial_putc('\r');
+        serial_putc(*s);
+        s++;
+    }
+}
+
+void serial_write_hex(unsigned int v) {
+    const char *h = "0123456789abcdef";
+    serial_putc('0');
+    serial_putc('x');
+    for (int i = 7; i >= 0; i--) serial_putc(h[(v >> (i * 4)) & 0xF]);
 }
 
 static void serial_print(const char *s) {

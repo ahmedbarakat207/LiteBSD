@@ -26,6 +26,10 @@
 #define MKDIR   23
 #define CHDIR   24
 #define GETCWD  25
+#define GETDENTS 26
+#define FTRUNCATE 27
+#define POLL 28
+#define UNAME 29
 
 #define USER_LOAD_ADDR 0x8000000   
 

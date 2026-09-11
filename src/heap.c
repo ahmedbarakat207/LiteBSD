@@ -31,7 +31,17 @@ void *kmalloc(size_t size) {
 
     while (block != NULL) {
         if (block->size >= requested) {
-            *link = block->next;
+            // split oversized blocks so the tail stays reusable
+            if (block->size >= requested + sizeof(struct heap_block) + 16) {
+                struct heap_block *tail = (struct heap_block*)((unsigned int)(block + 1) + requested);
+                tail->size = block->size - requested - sizeof(struct heap_block);
+                tail->magic = HEAP_BLOCK_FREE;
+                tail->next = block->next;
+                block->size = requested;
+                *link = tail;
+            } else {
+                *link = block->next;
+            }
             block->next = NULL;
             block->magic = HEAP_BLOCK_ALLOCATED;
             return (void *)(block + 1);

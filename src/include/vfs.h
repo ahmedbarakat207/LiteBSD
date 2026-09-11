@@ -17,8 +17,11 @@ int vfs_read(struct vfs_node *node, unsigned int offset, void *buffer, unsigned 
 int vfs_write(struct vfs_node *node, unsigned int offset, const void *buffer, unsigned int count);
 int vfs_stat(const char *path, struct stat *st);
 int vfs_fstat(struct vfs_node *node, struct stat *st);
+int vfs_truncate(struct vfs_node *node, unsigned int length);
 int vfs_unlink(const char *path);
 int vfs_mkdir(const char *path);
+// hardlink: new path shares the target's data blob (copy-on-write)
+int vfs_link(const char *path, const char *target_path);
 int vfs_chdir(const char *path);
 int vfs_getcwd(char *buffer, unsigned int size);
 void vfs_resolve_path(const char *cwd, const char *path, char *out, unsigned int max_len);

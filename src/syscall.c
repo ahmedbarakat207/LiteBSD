@@ -5,11 +5,11 @@
 #include "include/idt.h"
 #include "include/heap.h"
 #include "include/vfs.h"
+#include "include/time.h"
 #include <stdint.h>
 
 #define ELF_PT_LOAD 1
 
-// same declarations that the code won't want to compile without!!
 static int sys_write(uint32_t fd, uint32_t buffer, uint32_t count);
 static int sys_read(uint32_t fd, uint32_t buffer, uint32_t count);
 static int sys_exit(uint32_t status, uint32_t unused1, uint32_t unused2);
@@ -36,6 +36,9 @@ static int sys_mkdir(uint32_t path, uint32_t unused1, uint32_t unused2);
 static int sys_chdir(uint32_t path, uint32_t unused1, uint32_t unused2);
 static int sys_getcwd(uint32_t buffer, uint32_t size, uint32_t unused1);
 static int sys_getdents(uint32_t fd, uint32_t buf, uint32_t bufsize);
+static int sys_ftruncate(uint32_t fd, uint32_t length, uint32_t unused1);
+static int sys_poll(uint32_t fds, uint32_t nfds, uint32_t timeout);
+static int sys_uname(uint32_t buf, uint32_t unused1, uint32_t unused2);
 
 static int sys_execve_impl(struct interrupt_frame *frame, uint32_t path, uint32_t argv_u, uint32_t envp_u);
 
@@ -73,8 +76,11 @@ static const syscall_func_t syscall_table[] = {
     sys_unlink,                 // 22
     sys_mkdir,                  // 23
     sys_chdir,                  // 24
-    sys_getcwd,                 // 25
-    sys_getdents,               // 26
+    sys_getcwd,               // 25
+    sys_getdents,             // 26
+    sys_ftruncate,            // 27
+    sys_poll,                 // 28
+    sys_uname,                // 29
 };
 
 #define SYSCALL_COUNT (sizeof(syscall_table)/sizeof(syscall_table[0]))
@@ -118,7 +124,7 @@ static int sys_write(uint32_t fd, uint32_t buffer, uint32_t count){
         uint32_t written = 0;
         while (written < count) {
             if (p->count >= p->size) {
-                asm volatile("hlt");
+                asm volatile("sti; hlt");
                 continue;
             }
             p->buffer[p->write_pos] = buf[written];
@@ -138,29 +144,54 @@ static int sys_write(uint32_t fd, uint32_t buffer, uint32_t count){
     return -1;
 }
 
+static int is_console_fd(task_t *task, uint32_t fd){
+    if (!task || (int)fd < 0 || fd >= MAX_FDS || !task->fds[fd]) return 0;
+    struct file *f = task->fds[fd];
+    return f->node == NULL && f->pipe == NULL;
+}
+
 static int sys_read(uint32_t fd, uint32_t buffer, uint32_t count){
     if (buffer == 0 || count == 0 || !syscall_range_valid(buffer, count)) return -1;
     task_t *task = scheduler_current_task();
-    if (fd == 0 || (task && (int)fd >= 0 && fd < MAX_FDS && task->fds[fd] && !task->fds[fd]->node && !task->fds[fd]->pipe)) {
+    if (fd == 0 || is_console_fd(task, fd)) {
         char *buf = (char *)buffer;
+        if (!cons_is_canonical()) {
+            // raw mode: single chars, no line editing; VMIN>0 blocks for the first byte
+            uint32_t n = 0;
+            if (cons_cc(CON_VMIN) > 0) {
+                char c = getchar();
+                buf[n++] = c;
+                if (cons_echo_on()) print_char(c, VGA_COLOR_WHITE);
+            }
+            while (n < count) {
+                int c = keyboard_trygetc();
+                if (c < 0) break;
+                buf[n++] = (char)c;
+                if (cons_echo_on()) print_char((char)c, VGA_COLOR_WHITE);
+            }
+            return (int)n;
+        }
+        int echo = cons_echo_on();
         uint32_t i = 0;
         while (i < count - 1) {
             char c = getchar();
             if (c == '\n') {
                 buf[i++] = '\n';
-                print_char('\n', VGA_COLOR_WHITE);
+                if (echo) print_char('\n', VGA_COLOR_WHITE);
                 break;
             } else if (c == '\b') {
                 if (i > 0) {
                     i--;
-                    print_char('\b', VGA_COLOR_WHITE);
-                    print_char(' ', VGA_COLOR_WHITE);
-                    print_char('\b', VGA_COLOR_WHITE);
+                    if (echo) {
+                        print_char('\b', VGA_COLOR_WHITE);
+                        print_char(' ', VGA_COLOR_WHITE);
+                        print_char('\b', VGA_COLOR_WHITE);
+                    }
                 }
                 continue;
             } else {
                 buf[i++] = c;
-                print_char(c, VGA_COLOR_WHITE);
+                if (echo) print_char(c, VGA_COLOR_WHITE);
             }
         }
         buf[i] = '\0';
@@ -178,7 +209,7 @@ static int sys_read(uint32_t fd, uint32_t buffer, uint32_t count){
         while (read_count < count) {
             if (p->count == 0) {
                 if (p->write_ref <= 0) break;
-                asm volatile("hlt");
+                asm volatile("sti; hlt");
                 continue;
             }
             buf[read_count] = p->buffer[p->read_pos];
@@ -202,7 +233,15 @@ static int sys_exit(uint32_t status, uint32_t unused1, uint32_t unused2){
     (void)unused1;
     (void)unused2;
     println("[KERNEL] Task exiting", VGA_COLOR_WHITE);
+    task_t *task = scheduler_current_task();
+    uint32_t ppid = task ? task->ppid : 1;
     task_exit((int)status);
+    // init exiting would leave no runnable task and the zombie would get
+    // rescheduled into a ring-3 hlt fault, so bring a fresh shell up instead
+    if (ppid == 0) {
+        extern void respawn_user_shell(void);
+        respawn_user_shell();
+    }
     return 0;
 }
 
@@ -350,8 +389,31 @@ static int sys_execve_impl(struct interrupt_frame *frame, uint32_t path, uint32_
     uint16_t phentsize = *(uint16_t*)&header[42];
     uint16_t phnum = *(uint16_t*)&header[44];
 
-    // clear the userspace
-    for (uint32_t i = 0; i < 0x400000; i++) {
+    // clear only the range the segments will occupy, not the whole 4M window
+    uint32_t clear_end = 0;
+    for (uint16_t i = 0; i < phnum; i++) {
+        unsigned char ph[32];
+        if (vfs_read(node, phoff + i * phentsize, ph, 32) != 32) {
+            vfs_close(node);
+            kfree(stack);
+            exec_free_vec(arg_bufs, argc);
+            exec_free_vec(env_bufs, envc);
+            return -1;
+        }
+        if (*(uint32_t*)&ph[0] != ELF_PT_LOAD) continue;
+        uint32_t seg_end = *(uint32_t*)&ph[8] - USER_LOAD_ADDR + *(uint32_t*)&ph[20];
+        if (seg_end > clear_end) clear_end = seg_end;
+    }
+    if (clear_end > 0x400000) clear_end = 0x400000;
+    if (clear_end == 0) {
+        println("[EXECVE] No load segments", VGA_COLOR_RED);
+        vfs_close(node);
+        kfree(stack);
+        exec_free_vec(arg_bufs, argc);
+        exec_free_vec(env_bufs, envc);
+        return -1;
+    }
+    for (uint32_t i = 0; i < clear_end; i++) {
         ((char*)USER_LOAD_ADDR)[i] = 0;
     }
 
@@ -600,10 +662,35 @@ static int sys_kill(uint32_t pid, uint32_t sig, uint32_t unused1){
 }
 
 static int sys_ioctl(uint32_t fd, uint32_t request, uint32_t arg){
-    (void)fd;
-    (void)request;
-    (void)arg;
-    return -1;
+    task_t *task = scheduler_current_task();
+    if (!is_console_fd(task, fd)) return -1; // only the console is a tty
+    switch (request) {
+        case CON_TCGETS:
+            if (arg == 0 || !syscall_range_valid(arg, sizeof(struct con_termios))) return -1;
+            cons_tcget((struct con_termios*)arg);
+            return 0;
+        case CON_TCSETS:
+        case CON_TCSETSW:
+        case CON_TCSETSF:
+            if (arg == 0 || !syscall_range_valid(arg, sizeof(struct con_termios))) return -1;
+            cons_tcset((const struct con_termios*)arg);
+            if (request == CON_TCSETSF) keyboard_flush();
+            return 0;
+        case CON_TIOCGWINSZ:
+            if (arg == 0 || !syscall_range_valid(arg, sizeof(struct con_winsize))) return -1;
+            cons_ws_get((struct con_winsize*)arg);
+            return 0;
+        case CON_TIOCSWINSZ:
+            if (arg == 0 || !syscall_range_valid(arg, sizeof(struct con_winsize))) return -1;
+            cons_ws_set((const struct con_winsize*)arg);
+            return 0;
+        case CON_FIONREAD:
+            if (arg == 0 || !syscall_range_valid(arg, sizeof(int))) return -1;
+            *(int*)arg = keyboard_available();
+            return 0;
+        default:
+            return -1;
+    }
 }
 
 static int sys_open(uint32_t path, uint32_t flags, uint32_t mode){
@@ -716,6 +803,104 @@ static int sys_getdents(uint32_t fd, uint32_t buf, uint32_t bufsize){
     struct file *f = task->fds[fd];
     if (!f->node) return -1;
     return vfs_getdents_by_node(f->node, (void*)buf, bufsize);
+}
+
+static int sys_ftruncate(uint32_t fd, uint32_t length, uint32_t unused1){
+    (void)unused1;
+    task_t *task = scheduler_current_task();
+    if (!task) return -1;
+    if ((int)fd < 0 || fd >= MAX_FDS || !task->fds[fd]) return -1;
+    struct file *f = task->fds[fd];
+    if (!f->node || f->pipe) return -1;
+    return vfs_truncate(f->node, length);
+}
+
+// struct pollfd layout mirrors libc (int fd; short events; short revents)
+#define CON_POLLIN 0x0001
+#define CON_POLLOUT 0x0004
+#define CON_POLLNVAL 0x0020
+
+// layout mirrors libc struct utsname: 5 x 65-byte NUL-terminated fields
+#define UTS_LEN 65
+
+struct utsname_k {
+    char sysname[UTS_LEN];
+    char nodename[UTS_LEN];
+    char release[UTS_LEN];
+    char version[UTS_LEN];
+    char machine[UTS_LEN];
+};
+
+static void uts_copy_field(char *dst, const char *src){
+    uint32_t i = 0;
+    while (src[i] && i < UTS_LEN - 1) {
+        dst[i] = src[i];
+        i++;
+    }
+    dst[i] = '\0';
+}
+
+static int sys_uname(uint32_t buf, uint32_t unused1, uint32_t unused2){
+    (void)unused1;
+    (void)unused2;
+    if (buf == 0 || !syscall_range_valid(buf, sizeof(struct utsname_k))) return -1;
+    struct utsname_k *u = (struct utsname_k*)buf;
+    uts_copy_field(u->sysname, "LiteBSD");
+    uts_copy_field(u->nodename, "litebsd");
+    uts_copy_field(u->release, "1.0");
+    uts_copy_field(u->version, "LiteBSD i386");
+    uts_copy_field(u->machine, "i386");
+    return 0;
+}
+
+struct pollfd_k {
+    int fd;
+    short events;
+    short revents;
+};
+
+static int sys_poll(uint32_t fds, uint32_t nfds, uint32_t timeout_u){
+    int timeout = (int)timeout_u;
+    if (nfds > 16) return -1;
+    if (nfds > 0 && (fds == 0 || !syscall_range_valid(fds, nfds * sizeof(struct pollfd_k)))) return -1;
+    task_t *task = scheduler_current_task();
+    unsigned long start = timer_get_ticks();
+    for (;;) {
+        int nready = 0;
+        for (uint32_t i = 0; i < nfds; i++) {
+            struct pollfd_k *p = &((struct pollfd_k*)fds)[i];
+            short rev = 0;
+            int fd = p->fd;
+            if (fd < 0) {
+                p->revents = 0;
+                continue;
+            }
+            if (!task || fd >= MAX_FDS || !task->fds[fd]) {
+                rev = CON_POLLNVAL;
+            } else {
+                struct file *f = task->fds[fd];
+                if (f->node == NULL && f->pipe == NULL) {
+                    // console: input ready iff keys are buffered, output always ready
+                    if ((p->events & CON_POLLIN) && keyboard_available() > 0) rev |= CON_POLLIN;
+                    if (p->events & CON_POLLOUT) rev |= CON_POLLOUT;
+                } else if (f->pipe) {
+                    if ((p->events & CON_POLLIN) && f->pipe->count > 0) rev |= CON_POLLIN;
+                    if ((p->events & CON_POLLOUT) && f->pipe->count < f->pipe->size) rev |= CON_POLLOUT;
+                } else {
+                    // regular files are always ready
+                    if (p->events & CON_POLLIN) rev |= CON_POLLIN;
+                    if (p->events & CON_POLLOUT) rev |= CON_POLLOUT;
+                }
+            }
+            p->revents = rev;
+            if (rev) nready++;
+        }
+        if (nready > 0) return nready;
+        if (timeout == 0) return 0;
+        // PIT runs at 100Hz, so 1 tick = 10ms
+        if (timeout > 0 && timer_get_ticks() - start >= (unsigned long)((timeout + 9) / 10)) return 0;
+        asm volatile("sti; hlt");
+    }
 }
 
 struct interrupt_frame *syscall_handler(struct interrupt_frame *frame){

@@ -88,6 +88,7 @@ void initrd_load(uint32_t start, uint32_t end) {
     uint32_t addr = start;
     unsigned int files_loaded = 0;
     unsigned int dirs_loaded = 0;
+    unsigned int shared_bytes = 0;
 
     while (addr + 512 <= end) {
         tar_header_t *header = (tar_header_t*)addr;
@@ -162,18 +163,9 @@ void initrd_load(uint32_t start, uint32_t end) {
                 }
 
                 struct vfs_node *target = vfs_find_node(target_path);
-                struct vfs_node *node = target ? vfs_open(path, 0x40 | 0x02) : NULL;
-                if (target && node) {
+                if (target && vfs_link(path, target_path) == 0) {
                     struct stat tst;
-                    if (vfs_fstat(target, &tst) == 0 && tst.st_size > 0) {
-                        char *tmp = (char*)kmalloc(tst.st_size);
-                        if (tmp) {
-                            vfs_read(target, 0, tmp, tst.st_size);
-                            vfs_write(node, 0, tmp, tst.st_size);
-                            kfree(tmp);
-                        }
-                    }
-                    vfs_close(node);
+                    if (vfs_fstat(target, &tst) == 0) shared_bytes += tst.st_size;
                     files_loaded++;
                     print("[INITRD] Linked file: ", VGA_COLOR_WHITE);
                     println(path, VGA_COLOR_WHITE);
@@ -192,6 +184,8 @@ void initrd_load(uint32_t start, uint32_t end) {
     if (files_loaded == 0 && dirs_loaded == 0) {
         println("[INITRD] No entries found.", VGA_COLOR_YELLOW);
     } else {
-        println("[INITRD] Ready.", VGA_COLOR_GREEN);
+        print("[INITRD] Ready. Shared ", VGA_COLOR_GREEN);
+        print_dec(shared_bytes / 1024, VGA_COLOR_GREEN);
+        println("K via hardlinks.", VGA_COLOR_GREEN);
     }
 }

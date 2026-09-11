@@ -10,11 +10,14 @@ struct vfs_node {
     unsigned int mode;
     unsigned int ino;
     int refs;
+    // shared data blob: NULL = private. Otherwise points at a kmalloc'd
+    // refcount shared with every node holding the same bytes (hardlinks).
+    int *data_refs;
     struct vfs_node *next;
 };
 
 static struct vfs_node root = {
-    "/", NULL, 0, 0, S_IFDIR, 1, 1, NULL
+    "/", NULL, 0, 0, S_IFDIR, 1, 1, NULL, NULL
 };
 static struct vfs_node *nodes; // can you send me nodes?
 static unsigned int next_ino = 2;
@@ -126,6 +129,58 @@ static struct vfs_node *find_node(const char *path){
     return NULL;
 }
 
+// drop our hold on a shared data blob, freeing it for the last user
+static void data_release(struct vfs_node *node){
+    if (!node || !node->data_refs) return;
+    (*node->data_refs)--;
+    if (*node->data_refs <= 0) {
+        if (node->data) kfree(node->data);
+        kfree(node->data_refs);
+    }
+    node->data = NULL;
+    node->data_refs = NULL;
+}
+
+// copy-on-write: give this node a private data blob before mutating.
+// shared empty blobs just detach (nothing to copy).
+static int data_cow(struct vfs_node *node){
+    if (!node) return -1;
+    if (!node->data_refs || *node->data_refs <= 1) return 0;
+    (*node->data_refs)--;
+    char *data = NULL;
+    if (node->capacity > 0) {
+        data = (char*)kmalloc(node->capacity);
+        if (!data) return -1;
+        for (unsigned int i = 0; i < node->size; i++) data[i] = node->data[i];
+    }
+    int *refs = (int*)kmalloc(sizeof(int));
+    if (!refs) {
+        if (data) kfree(data);
+        return -1;
+    }
+    *refs = 1;
+    node->data = data;
+    node->data_refs = refs;
+    return 0;
+}
+
+// take shared ownership of target's data blob (target must be a file)
+static int data_share(struct vfs_node *node, struct vfs_node *target){
+    if (!node || !target || (target->mode & S_IFDIR)) return -1;
+    if (!target->data_refs) {
+        target->data_refs = (int*)kmalloc(sizeof(int));
+        if (!target->data_refs) return -1;
+        *target->data_refs = 1;
+    }
+    (*target->data_refs)++;
+    node->data = target->data;
+    node->size = target->size;
+    node->capacity = target->capacity;
+    node->mode = target->mode;
+    node->data_refs = target->data_refs;
+    return 0;
+}
+
 struct vfs_node *vfs_find_node(const char *path) {
     return find_node(path);
 }
@@ -154,6 +209,7 @@ struct vfs_node *vfs_open(const char *path, int flags){
     node->mode = S_IFREG;
     node->ino = next_ino++;
     node->refs = 1;
+    node->data_refs = NULL;
     node->next = nodes;
     nodes = node;
     return node;
@@ -177,6 +233,7 @@ int vfs_read(struct vfs_node *node, unsigned int offset, void *buffer, unsigned 
 
 int vfs_write(struct vfs_node *node, unsigned int offset, const void *buffer, unsigned int count){
     if (!node || !buffer || (node->mode & S_IFDIR)) return -1;
+    if (data_cow(node) != 0) return -1;
     unsigned int required = offset + count;
     if (required < offset) return -1;
     if (required > node->capacity) {
@@ -217,6 +274,29 @@ int vfs_fstat(struct vfs_node *node, struct stat *st){
     return 0;
 }
 
+int vfs_truncate(struct vfs_node *node, unsigned int length){
+    if (!node || (node->mode & S_IFDIR)) return -1;
+    if (data_cow(node) != 0) return -1;
+    if (length < node->size) {
+        node->size = length;
+        return 0;
+    }
+    if (length == node->size) return 0;
+    if (length > node->capacity) {
+        unsigned int capacity = node->capacity ? node->capacity : 256;
+        while (capacity < length) capacity *= 2;
+        char *data = (char*)kmalloc(capacity);
+        if (!data) return -1;
+        for (unsigned int i = 0; i < node->size; i++) data[i] = node->data[i];
+        if (node->data) kfree(node->data);
+        node->data = data;
+        node->capacity = capacity;
+    }
+    for (unsigned int i = node->size; i < length; i++) node->data[i] = 0;
+    node->size = length;
+    return 0;
+}
+
 int vfs_unlink(const char *path){
     if (!path) return -1;
     task_t *task = scheduler_current_task();
@@ -230,7 +310,10 @@ int vfs_unlink(const char *path){
         if (strings_equal((*link)->path, resolved)) {
             struct vfs_node *node = *link;
             *link = node->next;
-            if (node->data) kfree(node->data);
+            int had_refs = (node->data_refs != NULL);
+            char *data = node->data;
+            data_release(node);
+            if (!had_refs && data) kfree(data);
             kfree(node);
             return 0;
         }
@@ -248,8 +331,7 @@ int vfs_mkdir(const char *path){
 
     if (find_node(resolved)) return -1;
     int length = string_length(resolved);
-    if (resolved[0] != '/' || length == 0 || length >= 256) return -1;
-    struct vfs_node *node = (struct vfs_node*)kmalloc(sizeof(struct vfs_node));
+    if (resolved[0] != '/' || length == 0 || length >= 256) return -1;    struct vfs_node *node = (struct vfs_node*)kmalloc(sizeof(struct vfs_node));
     if (!node) return -1;
     for (int i = 0; i <= length; i++) node->path[i] = resolved[i];
     node->data = NULL;
@@ -258,6 +340,40 @@ int vfs_mkdir(const char *path){
     node->mode = S_IFDIR;
     node->ino = next_ino++;
     node->refs = 1;
+    node->data_refs = NULL;
+    node->next = nodes;
+    nodes = node;
+    return 0;
+}
+
+int vfs_link(const char *path, const char *target_path){
+    if (!path || !target_path) return -1;
+    task_t *task = scheduler_current_task();
+    const char *cwd = (task && task->cwd[0]) ? task->cwd : "/";
+    char resolved[256];
+    char target_resolved[256];
+    vfs_resolve_path(cwd, path, resolved, sizeof(resolved));
+    vfs_resolve_path(cwd, target_path, target_resolved, sizeof(target_resolved));
+
+    struct vfs_node *target = find_node(target_resolved);
+    if (!target || (target->mode & S_IFDIR)) return -1;
+    if (find_node(resolved)) return -1;
+    int length = string_length(resolved);
+    if (resolved[0] != '/' || length == 0 || length >= 256) return -1;
+    struct vfs_node *node = (struct vfs_node*)kmalloc(sizeof(struct vfs_node));
+    if (!node) return -1;
+    for (int i = 0; i <= length; i++) node->path[i] = resolved[i];
+    node->data = NULL;
+    node->size = 0;
+    node->capacity = 0;
+    node->mode = target->mode;
+    node->ino = next_ino++;
+    node->refs = 1;
+    node->data_refs = NULL;
+    if (data_share(node, target) != 0) {
+        kfree(node);
+        return -1;
+    }
     node->next = nodes;
     nodes = node;
     return 0;

@@ -54,8 +54,8 @@ initrd: busybox | $(BUILD_DIR)
 	mkdir -p $(BUILD_DIR)/initrd/root $(BUILD_DIR)/initrd/home $(BUILD_DIR)/initrd/var/log $(BUILD_DIR)/initrd/var/run $(BUILD_DIR)/initrd/var/tmp
 	chmod 1777 $(BUILD_DIR)/initrd/tmp
 	cp busybox/busybox $(BUILD_DIR)/initrd/bin/busybox
-	cp busybox/busybox $(BUILD_DIR)/initrd/bin/sh
-	for applet in bash ls cat echo pwd clear mkdir rmdir kill sleep test true false printf; do \
+	ln $(BUILD_DIR)/initrd/bin/busybox $(BUILD_DIR)/initrd/bin/sh 2>/dev/null || cp busybox/busybox $(BUILD_DIR)/initrd/bin/sh
+	for applet in bash ls cat echo pwd clear mkdir rmdir kill sleep test true false printf vi uname; do \
 		ln $(BUILD_DIR)/initrd/bin/busybox $(BUILD_DIR)/initrd/bin/$$applet 2>/dev/null || cp $(BUILD_DIR)/initrd/bin/busybox $(BUILD_DIR)/initrd/bin/$$applet; \
 		ln $(BUILD_DIR)/initrd/bin/busybox $(BUILD_DIR)/initrd/usr/bin/$$applet 2>/dev/null || true; \
 	done
