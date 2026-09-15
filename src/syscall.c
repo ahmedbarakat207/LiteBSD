@@ -39,6 +39,16 @@ static int sys_getdents(uint32_t fd, uint32_t buf, uint32_t bufsize);
 static int sys_ftruncate(uint32_t fd, uint32_t length, uint32_t unused1);
 static int sys_poll(uint32_t fds, uint32_t nfds, uint32_t timeout);
 static int sys_uname(uint32_t buf, uint32_t unused1, uint32_t unused2);
+static int sys_rename(uint32_t oldpath, uint32_t newpath, uint32_t unused1);
+static int sys_rmdir(uint32_t path, uint32_t unused1, uint32_t unused2);
+static int sys_symlink(uint32_t target, uint32_t linkpath, uint32_t unused1);
+static int sys_readlink(uint32_t path, uint32_t buf, uint32_t bufsize);
+static int sys_lstat(uint32_t path, uint32_t st, uint32_t unused1);
+static int sys_truncate(uint32_t path, uint32_t length, uint32_t unused1);
+static int sys_access(uint32_t path, uint32_t mode, uint32_t unused1);
+static int sys_link(uint32_t oldpath, uint32_t newpath, uint32_t unused1);
+static int sys_futimens(uint32_t fd, uint32_t times, uint32_t unused1);
+static int sys_utimens(uint32_t path, uint32_t times, uint32_t flags);
 
 static int sys_execve_impl(struct interrupt_frame *frame, uint32_t path, uint32_t argv_u, uint32_t envp_u);
 
@@ -81,6 +91,16 @@ static const syscall_func_t syscall_table[] = {
     sys_ftruncate,            // 27
     sys_poll,                 // 28
     sys_uname,                // 29
+    sys_rename,               // 30
+    sys_rmdir,                // 31
+    sys_symlink,              // 32
+    sys_readlink,             // 33
+    sys_lstat,                // 34
+    sys_truncate,             // 35
+    sys_access,               // 36
+    sys_link,                 // 37
+    sys_futimens,             // 38
+    sys_utimens,              // 39
 };
 
 #define SYSCALL_COUNT (sizeof(syscall_table)/sizeof(syscall_table[0]))
@@ -135,6 +155,11 @@ static int sys_write(uint32_t fd, uint32_t buffer, uint32_t count){
         return (int)written;
     }
     if (f->node) {
+        // O_APPEND: always write at EOF
+        if (f->flags & 0x400) {
+            struct stat st;
+            if (vfs_fstat(f->node, &st) == 0) f->offset = st.st_size;
+        }
         int written = vfs_write(f->node, f->offset, (const void*)buffer, count);
         if (written > 0) {
             f->offset += written;
@@ -347,8 +372,158 @@ static int sys_execve_impl(struct interrupt_frame *frame, uint32_t path, uint32_
         return -1;
     }
 
+    // resolve script path into a kernel buffer (may be rewritten by #! handling)
+    char exec_path[256];
+    {
+        unsigned int i = 0;
+        const char *up = (const char*)path;
+        while (i < sizeof(exec_path) - 1 && up[i]) {
+            exec_path[i] = up[i];
+            i++;
+        }
+        exec_path[i] = '\0';
+    }
+
+    struct vfs_node *node = NULL;
+    // #! loop: allow script -> interpreter chains up to 4 deep
+    for (int depth = 0; depth < 5; depth++) {
+        if (node) { vfs_close(node); node = NULL; }
+        node = vfs_open(exec_path, 0);
+        if (!node) {
+            println("[EXECVE] vfs_open failed!", VGA_COLOR_RED);
+            exec_free_vec(arg_bufs, argc);
+            exec_free_vec(env_bufs, envc);
+            return -1;
+        }
+        unsigned char hbuf[128];
+        int hlen = vfs_read(node, 0, hbuf, sizeof(hbuf));
+        if (hlen >= 2 && hbuf[0] == 0x7F && hlen >= 4 && hbuf[1] == 'E' && hbuf[2] == 'L' && hbuf[3] == 'F') {
+            break; // ELF, keep node open for loader below
+        }
+        if (hlen >= 2 && hbuf[0] == '#' && hbuf[1] == '!') {
+            // parse interpreter line
+            unsigned int i = 2;
+            while (i < (unsigned int)hlen && (hbuf[i] == ' ' || hbuf[i] == '\t')) i++;
+            unsigned int istart = i;
+            while (i < (unsigned int)hlen && hbuf[i] != '\n' && hbuf[i] != '\r' && hbuf[i] != ' ' && hbuf[i] != '\t' && hbuf[i] != '\0') i++;
+            unsigned int ilen = i - istart;
+            while (i < (unsigned int)hlen && (hbuf[i] == ' ' || hbuf[i] == '\t')) i++;
+            unsigned int astart = i;
+            while (i < (unsigned int)hlen && hbuf[i] != '\n' && hbuf[i] != '\r' && hbuf[i] != '\0') i++;
+            unsigned int alen = i - astart;
+            while (alen > 0 && (hbuf[astart + alen - 1] == ' ' || hbuf[astart + alen - 1] == '\t')) alen--;
+            if (ilen == 0 || ilen >= 128) {
+                println("[EXECVE] Bad #! line", VGA_COLOR_RED);
+                vfs_close(node);
+                exec_free_vec(arg_bufs, argc);
+                exec_free_vec(env_bufs, envc);
+                return -1;
+            }
+            char interp[128];
+            for (unsigned int k = 0; k < ilen; k++) interp[k] = (char)hbuf[istart + k];
+            interp[ilen] = '\0';
+            char optarg[128];
+            for (unsigned int k = 0; k < alen && k < sizeof(optarg) - 1; k++) optarg[k] = (char)hbuf[astart + k];
+            optarg[alen < sizeof(optarg) ? alen : sizeof(optarg) - 1] = '\0';
+            uint32_t need = argc + 1 + (alen > 0 ? 1 : 0);
+            if (need > EXEC_MAX_ARGS) {
+                println("[EXECVE] #! argv overflow", VGA_COLOR_RED);
+                vfs_close(node);
+                node = NULL;
+                exec_free_vec(arg_bufs, argc);
+                exec_free_vec(env_bufs, envc);
+                return -1;
+            }
+            // build new argv: [interp, opt?, exec_path, old_argv[1..]]
+            char *new_bufs[EXEC_MAX_ARGS];
+            uint32_t new_lens[EXEC_MAX_ARGS];
+            uint32_t nargc = 0;
+            uint32_t ntotal = 0;
+            char *ib = (char*)kmalloc(ilen + 1);
+            if (!ib) {
+                vfs_close(node);
+                exec_free_vec(arg_bufs, argc);
+                exec_free_vec(env_bufs, envc);
+                return -1;
+            }
+            for (unsigned int k = 0; k <= ilen; k++) ib[k] = interp[k];
+            new_bufs[nargc] = ib; new_lens[nargc] = ilen; nargc++; ntotal += ilen + 1;
+            if (alen > 0) {
+                char *ob = (char*)kmalloc(alen + 1);
+                if (!ob) {
+                    kfree(ib);
+                    vfs_close(node);
+                    exec_free_vec(arg_bufs, argc);
+                    exec_free_vec(env_bufs, envc);
+                    return -1;
+                }
+                for (unsigned int k = 0; k <= alen; k++) ob[k] = optarg[k];
+                new_bufs[nargc] = ob; new_lens[nargc] = alen; nargc++; ntotal += alen + 1;
+            }
+            // script path itself
+            unsigned int plen = 0;
+            while (exec_path[plen] && plen < sizeof(exec_path) - 1) plen++;
+            char *pb = (char*)kmalloc(plen + 1);
+            if (!pb) {
+                for (uint32_t k = 0; k < nargc; k++) kfree(new_bufs[k]);
+                vfs_close(node);
+                exec_free_vec(arg_bufs, argc);
+                exec_free_vec(env_bufs, envc);
+                return -1;
+            }
+            for (unsigned int k = 0; k <= plen; k++) pb[k] = exec_path[k];
+            new_bufs[nargc] = pb; new_lens[nargc] = plen; nargc++; ntotal += plen + 1;
+            // old argv[1..]
+            for (uint32_t k = 1; k < argc; k++) {
+                new_bufs[nargc] = arg_bufs[k];
+                new_lens[nargc] = arg_lens[k];
+                nargc++; ntotal += arg_lens[k] + 1;
+            }
+            // free old argv[0] (replaced by interp+script), keep env
+            if (argc > 0) kfree(arg_bufs[0]);
+            for (uint32_t k = 0; k < nargc; k++) {
+                arg_bufs[k] = new_bufs[k];
+                arg_lens[k] = new_lens[k];
+            }
+            argc = nargc;
+            arg_total = ntotal;
+            // next iteration loads the interpreter
+            for (unsigned int k = 0; k <= ilen && k < sizeof(exec_path) - 1; k++) {
+                exec_path[k] = interp[k];
+                if (interp[k] == '\0') break;
+            }
+            exec_path[sizeof(exec_path) - 1] = '\0';
+            print("[EXECVE] #! -> ", VGA_COLOR_LIGHT_GREEN);
+            println(exec_path, VGA_COLOR_LIGHT_GREEN);
+            continue;
+        }
+        // neither ELF nor #!
+        println("[EXECVE] Not an ELF binary", VGA_COLOR_RED);
+        vfs_close(node);
+        node = NULL;
+        exec_free_vec(arg_bufs, argc);
+        exec_free_vec(env_bufs, envc);
+        return -1;
+    }
+    if (!node) {
+        println("[EXECVE] vfs_open failed!", VGA_COLOR_RED);
+        exec_free_vec(arg_bufs, argc);
+        exec_free_vec(env_bufs, envc);
+        return -1;
+    }
+    // re-check stack budget after #! expansion
+    nwords = 1 + (argc + 1) + (envc + 1);
+    if (arg_total + env_total + nwords * 4 + 64 > EXEC_STACK_SIZE - 128) {
+        println("[EXECVE] Args too big", VGA_COLOR_RED);
+        vfs_close(node);
+        exec_free_vec(arg_bufs, argc);
+        exec_free_vec(env_bufs, envc);
+        return -1;
+    }
+
     uint32_t *stack = (uint32_t*)kmalloc(EXEC_STACK_SIZE);
     if (!stack) {
+        vfs_close(node);
         exec_free_vec(arg_bufs, argc);
         exec_free_vec(env_bufs, envc);
         return -1;
@@ -357,26 +532,9 @@ static int sys_execve_impl(struct interrupt_frame *frame, uint32_t path, uint32_
     uint32_t stack_top = (uint32_t)stack + EXEC_STACK_SIZE - 64;
     stack_top &= ~0x0F;
 
-    struct vfs_node *node = vfs_open((const char*)path, 0);
-    if (!node) {
-        println("[EXECVE] vfs_open failed!", VGA_COLOR_RED);
-        kfree(stack);
-        exec_free_vec(arg_bufs, argc);
-        exec_free_vec(env_bufs, envc);
-        return -1;
-    }
-
     unsigned char header[52];
     if (vfs_read(node, 0, header, 52) != 52) {
         println("[EXECVE] Failed to read header", VGA_COLOR_RED);
-        vfs_close(node);
-        kfree(stack);
-        exec_free_vec(arg_bufs, argc);
-        exec_free_vec(env_bufs, envc);
-        return -1;
-    }
-    if (header[0] != 0x7F || header[1] != 'E' || header[2] != 'L' || header[3] != 'F') {
-        println("[EXECVE] Not an ELF binary", VGA_COLOR_RED);
         vfs_close(node);
         kfree(stack);
         exec_free_vec(arg_bufs, argc);
@@ -696,9 +854,18 @@ static int sys_ioctl(uint32_t fd, uint32_t request, uint32_t arg){
 static int sys_open(uint32_t path, uint32_t flags, uint32_t mode){
     (void)mode;
     if (!syscall_string_valid(path)) return -1;
+    // O_EXCL|O_CREAT must fail if the file already exists
+    if ((flags & 0x40) && (flags & 0x80)) {
+        struct stat st;
+        if (vfs_stat((const char*)path, &st) == 0) return -1;
+    }
     struct vfs_node *node = vfs_open((const char*)path, (int)flags);
     if (!node) {
         return -1;
+    }
+    // O_TRUNC: empty regular files on open
+    if (flags & 0x200) {
+        vfs_truncate(node, 0);
     }
     struct file *f = (struct file*)kmalloc(sizeof(struct file));
     if (!f) {
@@ -707,6 +874,11 @@ static int sys_open(uint32_t path, uint32_t flags, uint32_t mode){
     }
     f->node = node;
     f->offset = 0;
+    // O_APPEND starts at EOF
+    if (flags & 0x400) {
+        struct stat st;
+        if (vfs_fstat(node, &st) == 0) f->offset = st.st_size;
+    }
     f->flags = (int)flags;
     f->ref_count = 1;
     f->pipe = NULL;
@@ -772,6 +944,11 @@ static int sys_unlink(uint32_t path, uint32_t unused1, uint32_t unused2){
     (void)unused1;
     (void)unused2;
     if (!syscall_string_valid(path)) return -1;
+    // Linux: unlink(2) refuses directories (use rmdir)
+    struct stat st;
+    if (vfs_lstat((const char*)path, &st) == 0) {
+        if ((st.st_mode & 0x4000) != 0 && (st.st_mode & 0xF000) != (uint32_t)0xA000) return -1;
+    }
     return vfs_unlink((const char*)path);
 }
 
@@ -846,10 +1023,10 @@ static int sys_uname(uint32_t buf, uint32_t unused1, uint32_t unused2){
     if (buf == 0 || !syscall_range_valid(buf, sizeof(struct utsname_k))) return -1;
     struct utsname_k *u = (struct utsname_k*)buf;
     uts_copy_field(u->sysname, "LiteBSD");
-    uts_copy_field(u->nodename, "litebsd");
-    uts_copy_field(u->release, "1.0");
-    uts_copy_field(u->version, "LiteBSD i386");
-    uts_copy_field(u->machine, "i386");
+    uts_copy_field(u->nodename, "lite");
+    uts_copy_field(u->release, "Release");
+    uts_copy_field(u->version, "2.0");
+    uts_copy_field(u->machine, "i386 (8086 mode)");
     return 0;
 }
 
@@ -901,6 +1078,75 @@ static int sys_poll(uint32_t fds, uint32_t nfds, uint32_t timeout_u){
         if (timeout > 0 && timer_get_ticks() - start >= (unsigned long)((timeout + 9) / 10)) return 0;
         asm volatile("sti; hlt");
     }
+}
+
+static int sys_rename(uint32_t oldpath, uint32_t newpath, uint32_t unused1){
+    (void)unused1;
+    if (!syscall_string_valid(oldpath) || !syscall_string_valid(newpath)) return -1;
+    return vfs_rename((const char*)oldpath, (const char*)newpath);
+}
+
+static int sys_rmdir(uint32_t path, uint32_t unused1, uint32_t unused2){
+    (void)unused1;
+    (void)unused2;
+    if (!syscall_string_valid(path)) return -1;
+    return vfs_rmdir((const char*)path);
+}
+
+static int sys_symlink(uint32_t target, uint32_t linkpath, uint32_t unused1){
+    (void)unused1;
+    if (!syscall_string_valid(target) || !syscall_string_valid(linkpath)) return -1;
+    return vfs_symlink((const char*)target, (const char*)linkpath);
+}
+
+static int sys_readlink(uint32_t path, uint32_t buf, uint32_t bufsize){
+    if (!syscall_string_valid(path)) return -1;
+    if (buf == 0 || bufsize == 0 || !syscall_range_valid(buf, bufsize)) return -1;
+    return vfs_readlink((const char*)path, (char*)buf, bufsize);
+}
+
+static int sys_lstat(uint32_t path, uint32_t st, uint32_t unused1){
+    (void)unused1;
+    if (!syscall_string_valid(path) || !syscall_range_valid(st, sizeof(struct stat))) return -1;
+    return vfs_lstat((const char*)path, (struct stat*)st);
+}
+
+static int sys_truncate(uint32_t path, uint32_t length, uint32_t unused1){
+    (void)unused1;
+    if (!syscall_string_valid(path)) return -1;
+    return vfs_truncate_path((const char*)path, length);
+}
+
+static int sys_access(uint32_t path, uint32_t mode, uint32_t unused1){
+    (void)unused1;
+    if (!syscall_string_valid(path)) return -1;
+    return vfs_access((const char*)path, (int)mode);
+}
+
+static int sys_link(uint32_t oldpath, uint32_t newpath, uint32_t unused1){
+    (void)unused1;
+    if (!syscall_string_valid(oldpath) || !syscall_string_valid(newpath)) return -1;
+    return vfs_link((const char*)newpath, (const char*)oldpath);
+}
+
+// times is NULL (set both to now) or a user pointer to two (sec, nsec)
+// pairs in struct timespec layout. nsec validation happens in the VFS.
+static int sys_futimens(uint32_t fd, uint32_t times, uint32_t unused1){
+    (void)unused1;
+    if (times != 0 && !syscall_range_valid(times, 16)) return -1;
+    task_t *task = scheduler_current_task();
+    if (!task) return -1;
+    if ((int)fd < 0 || fd >= MAX_FDS || !task->fds[fd]) return -1;
+    struct file *f = task->fds[fd];
+    if (!f->node || f->pipe) return -1;
+    return vfs_futimens(f->node, (const long*)times);
+}
+
+static int sys_utimens(uint32_t path, uint32_t times, uint32_t flags){
+    if (!syscall_string_valid(path)) return -1;
+    if (times != 0 && !syscall_range_valid(times, 16)) return -1;
+    if (flags != 0 && flags != 0x100) return -1;
+    return vfs_utimens((const char*)path, (const long*)times, (int)flags);
 }
 
 struct interrupt_frame *syscall_handler(struct interrupt_frame *frame){

@@ -1,6 +1,6 @@
 # LiteBSD
 
-A 32-bit x86 hobby OS that boots to a real BusyBox shell. Multiboot kernel, preemptive scheduler, ~26 syscalls, a toy VFS + initrd, a from-scratch libc (c-lite), and upstream BusyBox 1.36.1 statically linked against that libc running `hush` in ring 3.
+A 32-bit x86 hobby OS that boots to a real BusyBox shell. Multiboot kernel, preemptive scheduler, ~39 syscalls, a toy VFS + initrd, a from-scratch libc (c-lite), and upstream BusyBox 1.36.1 statically linked against that libc running `hush` in ring 3.
 
 No, it's not BSD. The name is aspirational.
 
@@ -37,7 +37,7 @@ linker.ld         kernel linked at 1M, ENTRY(start)
 isolinux.cfg      ISOLINUX + mboot.c32: kernel as multiboot, initrd.tar as module
 libc/             c-lite submodule: crt0, syscalls, malloc, stdio, dirent...
 busybox/          upstream busybox submodule + busybox.patch
-busybox.config    the actual busybox config (hush, ~15 applets, static)
+busybox.config    the actual busybox config (hush, ~24 applets, static)
 ```
 
 ## Boot sequence
@@ -83,13 +83,13 @@ The interesting bits:
 
 - **fork is vfork.** `fork_task` copies the 4K kernel stack, gives the kid its own user-stack *copy* (with `useresp`/`ebp` shifted by the delta, and only if they actually pointed inside the old stack — shifting blindly used to corrupt heap `ebp`s), but the heap is *shared* and the parent goes `TASK_BLOCKED` until the kid execs or exits. Copying the heap was tried; it leaves stale pointers everywhere (`malloc`'s free list, `argv` strings) and leaks 1M per fork. The syscall handler runs the kid first on fork return so the parent can't touch shared state mid-flight.
 - **wait4 rewind trick.** If there's nothing to reap and no `WNOHANG`, `wait4` returns `-2`, and the handler rewinds `eip -= 2` (an `int $0x80` is exactly 2 bytes: `CD 80`) and reschedules, so the parent transparently retries the syscall later. Nasty, works.
-- **exec forwards argv/envp.** `sys_execve_impl` snapshots argv/envp into `kmalloc`'d buffers *before* wiping `USER_LOAD_ADDR` (the strings may live in the old image), loads ELF segments, zeroes bss tails, then builds the standard i386 stack (`argc`, `argv`, `envp`, strings — the layout `crt0` already expects) on a fresh 16K stack and sets `eip/esp/useresp`. Caps: 64 args / 64 env, 1K per string, 8K total; oversize or malformed vectors fail with `-1` and leave the old image intact.
+- **exec forwards argv/envp.** `sys_execve_impl` snapshots argv/envp into `kmalloc`'d buffers *before* wiping `USER_LOAD_ADDR` (the strings may live in the old image), loads ELF segments, zeroes bss tails, then builds the standard i386 stack (`argc`, `argv`, `envp`, strings — the layout `crt0` already expects) on a fresh 16K stack and sets `eip/esp/useresp`. Caps: 64 args / 64 env, 1K per string, 8K total; oversize or malformed vectors fail with `-1` and leave the old image intact. `#!` scripts are resolved in-kernel (up to 4 deep, one optional arg) and re-targeted at the interpreter — but like any fork+exec, a script faults the blocked parent afterwards (same caveat as `sleep` below).
 - **Faults kill, they don't hang.** A ring-3 fault (`cs == 0x1B`) marks the task `ZOMBIE` exit `128+11`, wakes a blocked parent, and schedules away. A kernel-mode fault still `cli; hlt`s, because at that point something is deeply wrong and pretending otherwise helps nobody. If the dead task was the init shell (`ppid == 0`), `respawn_user_shell()` starts a fresh one so the box stays usable.
 - **One shell owns the keyboard.** The old kernel debug `shell()` used to race hush for scancodes *and* interleave scheduling around fork+exec, which is part of how parents ended up corrupted after failed execs. It's still in `tty.c` but no longer started; only hush reads input now.
 
 ## Syscalls
 
-`int $0x80`, number in `eax`, args in `ebx/ecx/edx`. Numbers 1–29:
+`int $0x80`, number in `eax`, args in `ebx/ecx/edx`. Numbers 1–37:
 
 ```
 1 write   2 read    3 exit    4 getpid  5 fork    6 execve  7 wait4
@@ -97,7 +97,8 @@ The interesting bits:
 15 kill (only SIGKILL/9 does anything)  16 ioctl (console only, see below)
 17 open    18 close  19 lseek  20 stat   21 fstat  22 unlink 23 mkdir
 24 chdir  25 getcwd  26 getdents (custom) 27 ftruncate 28 poll
-29 uname
+29 uname  30 rename 31 rmdir 32 symlink 33 readlink 34 lstat
+35 truncate 36 access 37 link (hardlink) 38 futimens 39 utimens
 ```
 
 `getdents` doesn't follow Linux's ABI — it fills the buffer with flat `(ino:u32, reclen:u32, name:NUL)` records, and `libc/src/dirent.c` knows that layout. Validation of user pointers goes through `scheduler_user_range_valid`, which accepts the USER_LOAD region, the task's heap window, the task's stack, and anything under 1M (kernel/rodata, because everything is mapped anyway).
@@ -112,7 +113,7 @@ VGA understands the ANSI subset fullscreen programs need: `H/f` (cup), `A/B/C/D`
 
 ## VFS
 
-There is no disk driver. The filesystem is a linked list of `vfs_node`s holding full paths (`/bin/ls`, ...), populated once from the initrd. `vfs_resolve_path(cwd, path)` normalizes `.`/`..`/double slashes, every syscall resolves through the caller's `cwd`, and `getdents` enumerates direct children by prefix matching (root is special-cased since every path starts with `/`). `refs` are bumped on open; directories are just nodes with `S_IFDIR`.
+There is no disk driver. The filesystem is a linked list of `vfs_node`s holding full paths (`/bin/ls`, ...), populated once from the initrd. `vfs_resolve_path(cwd, path)` normalizes `.`/`..`/double slashes, every syscall resolves through the caller's `cwd`, and `getdents` enumerates direct children by prefix matching (root is special-cased since every path starts with `/`). `refs` are bumped on open; directories are just nodes with `S_IFDIR`. Symlinks (`S_IFLNK`, target in the data blob, followed on open/stat/chdir, up to 8 deep), `rename` (rewrites dir children prefixes too), `rmdir` (refuses non-empty), and hardlinks (shared COW blobs) are supported. `/dev/null` discards writes and reads EOF; `/dev/zero` discards writes and reads NULs. `open` honors `O_TRUNC`/`O_EXCL`/`O_APPEND`; `unlink` refuses directories. Every node carries `atime/mtime/ctime` (sec + nsec, `stat` reads them back): create stamps all three, reads bump atime (even on EOF), writes/truncates bump mtime+ctime, renames/links bump ctime, and `futimens`/`utimens` set explicit times (`UTIME_NOW`/`UTIME_OMIT` honored). The clock is seconds (+10ms nsec) since boot from the 100Hz PIT — ordering and `touch`/`cp`-style preservation are exact, but wall-clock dates wait on an RTC driver, so `stat` still renders 1970 until then.
 
 ## initrd
 
@@ -121,7 +122,7 @@ There is no disk driver. The filesystem is a linked list of `vfs_node`s holding 
 ## Userspace
 
 - **c-lite** (`libc/` submodule): `crt0.asm`, raw `int $0x80` wrappers, `malloc` over `brk`, stdio, string, `dirent` speaking the custom getdents layout, plus compat shims. BusyBox links against it statically (`-nostdlib`, `-Ttext,0x8000000`).
-- **BusyBox 1.36.1** with a small config: `hush` (`SH_IS_HUSH`, `BASH_IS_HUSH`, standalone + nofork), and applets `cat echo ls mkdir pwd clear kill sleep test true false printf bash vi uname` (`vi` minimal: colon commands on, no search/yank/signals/resize). `busybox.patch` flips `ls`/`cat`/`vi` to `APPLET_NOFORK` so they run in-process (no fork+exec round trip), fixes a link-line quoting bug in `trylink`, and drops libm.
+- **BusyBox 1.36.1** with a small config: `hush` (`SH_IS_HUSH`, `BASH_IS_HUSH`, standalone + nofork), and applets `cat echo ls mkdir pwd clear kill sleep test true false printf bash vi uname cp mv rm rmdir ln touch readlink realpath truncate stat` (`vi` minimal: colon commands on, no search/yank/signals/resize; `stat` with `-c` formats, no filesystem mode). `busybox.patch` flips `ls`/`cat`/`vi`/`cp`/`mv`/`rm`/`ln`/`stat` to `APPLET_NOFORK` so they run in-process (no fork+exec round trip), fixes a link-line quoting bug in `trylink`, and drops libm.
 
 ## Debugging
 

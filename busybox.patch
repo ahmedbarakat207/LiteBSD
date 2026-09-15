@@ -77,3 +77,68 @@ index 2255dee..8b846e7 100755
  
  # The --sort-section option is not supported by older versions of ld
  SORT_SECTION="-Wl,--sort-section,alignment"
+diff --git a/coreutils/cp.c b/coreutils/cp.c
+index ee40af5..e13b7f5 100644
+--- a/coreutils/cp.c
++++ b/coreutils/cp.c
+@@ -30,7 +30,7 @@
+ //config:	default y
+ //config:	depends on FEATURE_CP_LONG_OPTIONS
+ 
+-//applet:IF_CP(APPLET_NOEXEC(cp, cp, BB_DIR_BIN, BB_SUID_DROP, cp))
++//applet:IF_CP(APPLET_NOFORK(cp, cp, BB_DIR_BIN, BB_SUID_DROP, cp))
+ /* NOEXEC despite cases when it can be a "runner" (cp -r LARGE_DIR NEW_DIR) */
+ 
+ //kbuild:lib-$(CONFIG_CP) += cp.o
+diff --git a/coreutils/ln.c b/coreutils/ln.c
+index 2dcf79c..e762adf 100644
+--- a/coreutils/ln.c
++++ b/coreutils/ln.c
+@@ -12,7 +12,7 @@
+ //config:	help
+ //config:	ln is used to create hard or soft links between files.
+ 
+-//applet:IF_LN(APPLET_NOEXEC(ln, ln, BB_DIR_BIN, BB_SUID_DROP, ln))
++//applet:IF_LN(APPLET_NOFORK(ln, ln, BB_DIR_BIN, BB_SUID_DROP, ln))
+ 
+ //kbuild:lib-$(CONFIG_LN) += ln.o
+ 
+diff --git a/coreutils/mv.c b/coreutils/mv.c
+index cf6169a..0783ee1 100644
+--- a/coreutils/mv.c
++++ b/coreutils/mv.c
+@@ -17,7 +17,7 @@
+ //config:	help
+ //config:	mv is used to move or rename files or directories.
+ 
+-//applet:IF_MV(APPLET_NOEXEC(mv, mv, BB_DIR_BIN, BB_SUID_DROP, mv))
++//applet:IF_MV(APPLET_NOFORK(mv, mv, BB_DIR_BIN, BB_SUID_DROP, mv))
+ /* NOEXEC despite cases when it can be a "runner" (mv LARGE_DIR OTHER_FS) */
+ 
+ //kbuild:lib-$(CONFIG_MV) += mv.o
+diff --git a/coreutils/rm.c b/coreutils/rm.c
+index d000129..4c834b1 100644
+--- a/coreutils/rm.c
++++ b/coreutils/rm.c
+@@ -16,7 +16,7 @@
+ //config:	help
+ //config:	rm is used to remove files or directories.
+ 
+-//applet:IF_RM(APPLET_NOEXEC(rm, rm, BB_DIR_BIN, BB_SUID_DROP, rm))
++//applet:IF_RM(APPLET_NOFORK(rm, rm, BB_DIR_BIN, BB_SUID_DROP, rm))
+ /* was NOFORK, but then "rm -i FILE" can't be ^C'ed if run by hush */
+ 
+ //kbuild:lib-$(CONFIG_RM) += rm.o
+diff --git a/coreutils/stat.c b/coreutils/stat.c
+index 2c2909e..1966633 100644
+--- a/coreutils/stat.c
++++ b/coreutils/stat.c
+@@ -35,7 +35,7 @@
+ //config:	Without this, stat will not support the '-f' option to display
+ //config:	information about filesystem status.
+ 
+-//applet:IF_STAT(APPLET_NOEXEC(stat, stat, BB_DIR_BIN, BB_SUID_DROP, stat))
++//applet:IF_STAT(APPLET_NOFORK(stat, stat, BB_DIR_BIN, BB_SUID_DROP, stat))
+ 
+ //kbuild:lib-$(CONFIG_STAT) += stat.o
+ 

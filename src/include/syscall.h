@@ -30,6 +30,16 @@
 #define FTRUNCATE 27
 #define POLL 28
 #define UNAME 29
+#define RENAME 30
+#define RMDIR 31
+#define SYMLINK 32
+#define READLINK 33
+#define LSTAT 34
+#define TRUNCATE 35
+#define ACCESS 36
+#define LINK 37
+#define FUTIMENS 38
+#define UTIMENS 39
 
 #define USER_LOAD_ADDR 0x8000000   
 

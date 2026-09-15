@@ -55,7 +55,7 @@ initrd: busybox | $(BUILD_DIR)
 	chmod 1777 $(BUILD_DIR)/initrd/tmp
 	cp busybox/busybox $(BUILD_DIR)/initrd/bin/busybox
 	ln $(BUILD_DIR)/initrd/bin/busybox $(BUILD_DIR)/initrd/bin/sh 2>/dev/null || cp busybox/busybox $(BUILD_DIR)/initrd/bin/sh
-	for applet in bash ls cat echo pwd clear mkdir rmdir kill sleep test true false printf vi uname; do \
+	for applet in bash ls cat echo pwd clear mkdir rmdir kill sleep test true false printf vi uname cp mv rm ln touch readlink realpath truncate stat; do \
 		ln $(BUILD_DIR)/initrd/bin/busybox $(BUILD_DIR)/initrd/bin/$$applet 2>/dev/null || cp $(BUILD_DIR)/initrd/bin/busybox $(BUILD_DIR)/initrd/bin/$$applet; \
 		ln $(BUILD_DIR)/initrd/bin/busybox $(BUILD_DIR)/initrd/usr/bin/$$applet 2>/dev/null || true; \
 	done
