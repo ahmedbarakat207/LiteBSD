@@ -122,7 +122,7 @@ There is no disk driver. The filesystem is a linked list of `vfs_node`s holding 
 ## Userspace
 
 - **c-lite** (`libc/` submodule): `crt0.asm`, raw `int $0x80` wrappers, `malloc` over `brk`, stdio, string, `dirent` speaking the custom getdents layout, plus compat shims. BusyBox links against it statically (`-nostdlib`, `-Ttext,0x8000000`).
-- **BusyBox 1.36.1** with a small config: `hush` (`SH_IS_HUSH`, `BASH_IS_HUSH`, standalone + nofork), and applets `cat echo ls mkdir pwd clear kill sleep test true false printf bash vi uname cp mv rm rmdir ln touch readlink realpath truncate stat` (`vi` minimal: colon commands on, no search/yank/signals/resize; `stat` with `-c` formats, no filesystem mode). `busybox.patch` flips `ls`/`cat`/`vi`/`cp`/`mv`/`rm`/`ln`/`stat` to `APPLET_NOFORK` so they run in-process (no fork+exec round trip), fixes a link-line quoting bug in `trylink`, and drops libm.
+- **BusyBox 1.36.1** with a small config: `hush` (`SH_IS_HUSH`, `BASH_IS_HUSH`, standalone + nofork), and applets `cat echo ls mkdir pwd clear kill sleep test true false printf bash vi uname cp mv rm rmdir ln touch readlink realpath truncate stat` (`vi` minimal: colon commands on, no search/yank/signals/resize; `stat` with `-c` formats, no filesystem mode). `busybox.patch` flips `ls`/`cat`/`vi`/`cp`/`mv`/`rm`/`ln`/`stat` to `APPLET_NOFORK` so they run in-process (no fork+exec round trip), fixes a link-line quoting bug in `trylink`, and drops libm. Shell globbing (`*?[]`, dotfile rules, `dir/*`) is a real libc `glob()` over `opendir`/`readdir`/`fnmatch`, so `rm -rf *` and dash-args (`rm -- -x`) behave; matches come back in readdir order (unsorted).
 
 ## Debugging
 
