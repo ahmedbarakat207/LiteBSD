@@ -44,6 +44,12 @@ typedef struct task {
     uint32_t heap_start;
     uint32_t heap_brk;
     uint32_t heap_end;
+    unsigned long cpu_ticks;  // timer ticks charged while RUNNING
+    unsigned long start_tick; // creation tick (USER_HZ=100, matches /proc)
+    char comm[16];            // short name for /proc (from exec basename)
+    char cmdline[256];        // NUL-joined argv snapshot for /proc
+    uint32_t img_size;        // bytes of user image in use (from last exec)
+    void    *img_snapshot;    // saved image copy made at fork; restored when child exits sans exec
 } task_t;
 
 void sched_init();
@@ -61,3 +67,9 @@ void task_unblock(uint32_t pid);
 int alloc_fd(task_t *task, struct file *f);
 void release_fd(task_t *task, int fd);
 int scheduler_other_running_tasks(void);
+// process accounting for /proc
+task_t *sched_task_head(void);
+uint32_t sched_next_pid(void);
+unsigned long sched_idle_ticks(void);
+int sched_task_count(void);
+void sched_account_tick(void);

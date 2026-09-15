@@ -2,6 +2,7 @@
 #include "include/heap.h"
 #include "include/sched.h"
 #include "include/time.h"
+#include "include/sysinfo.h"
 
 struct vfs_node {
     char path[256];
@@ -11,6 +12,7 @@ struct vfs_node {
     unsigned int mode;
     unsigned int ino;
     int refs;
+    int synth; // 1 = generated /proc|/sys node, freed on last close
     // timestamps: seconds (+nanoseconds) since boot, from the 100Hz PIT.
     // wall-clock accuracy arrives with an RTC driver; until then the clock
     // reads boot time, but ordering and explicit utimens values are exact.
@@ -27,7 +29,7 @@ struct vfs_node {
 };
 
 static struct vfs_node root = {
-    "/", NULL, 0, 0, S_IFDIR, 1, 1, 0, 0, 0, 0, 0, 0, NULL, NULL
+    "/", NULL, 0, 0, S_IFDIR, 1, 1, 0, 0, 0, 0, 0, 0, 0, NULL, NULL
 };
 static struct vfs_node *nodes; // can you send me nodes?
 static unsigned int next_ino = 2;
@@ -245,6 +247,326 @@ static int follow_symlinks(char *resolved){
     return -1;
 }
 
+// ---- synthetic /proc + /sys ----
+
+#define SYNTH_NONE 0
+#define SYNTH_PROCDIR 1   // /proc itself (real node exists; listing is synth)
+#define SYNTH_PIDDIR 2    // /proc/<pid>
+#define SYNTH_PIDFILE 3   // /proc/<pid>/{stat,cmdline}, slot = PID_*
+#define SYNTH_PROFILE 4   // /proc/<file>, slot = PROC_*
+#define SYNTH_SYSDIR 5    // known /sys dir prefix (index in sys_dirs)
+#define SYNTH_SYSFILE 6   // .../dmi/id/<file>, slot = SYS_*
+
+struct synth_id {
+    int kind;
+    task_t *task;
+    int slot;
+};
+
+static const char *proc_files[NPROC_FILES] = {
+    "meminfo", "cpuinfo", "uptime", "version", "loadavg", "stat"
+};
+static const char *pid_files[NPID_FILES] = { "stat", "cmdline" };
+static const char *sys_files[NSYS_FILES] = {
+    "sys_vendor", "product_name", "product_version"
+};
+static const char *sys_dirs[] = {
+    "/sys", "/sys/devices", "/sys/devices/virtual",
+    "/sys/devices/virtual/dmi", "/sys/devices/virtual/dmi/id"
+};
+#define NSYS_DIRS 5
+
+// strictly digits, nonempty; value in *out
+static int parse_pid(const char *s, uint32_t *out){
+    uint32_t v = 0;
+    if (!s || !*s) return -1;
+    while (*s) {
+        if (*s < '0' || *s > '9') return -1;
+        v = v * 10 + (unsigned int)(*s - '0');
+        s++;
+    }
+    *out = v;
+    return 0;
+}
+
+static int synth_lookup(const char *resolved, struct synth_id *out){
+    unsigned int i = 0;
+    out->kind = SYNTH_NONE;
+    out->task = NULL;
+    out->slot = 0;
+    if (!resolved || resolved[0] != '/') return SYNTH_NONE;
+    // /proc tree
+    if (strings_equal(resolved, "/proc")) {
+        out->kind = SYNTH_PROCDIR;
+        return SYNTH_PROCDIR;
+    }
+    if (resolved[1] == 'p' && resolved[2] == 'r' && resolved[3] == 'o' &&
+        resolved[4] == 'c' && resolved[5] == '/') {
+        const char *rest = resolved + 6;
+        // fixed files?
+        for (i = 0; i < NPROC_FILES; i++) {
+            if (strings_equal(rest, proc_files[i])) {
+                out->kind = SYNTH_PROFILE;
+                out->slot = (int)i;
+                return SYNTH_PROFILE;
+            }
+        }
+        // <pid>[/<file>]?
+        {
+            char pbuf[16];
+            unsigned int j = 0;
+            while (rest[j] && rest[j] != '/' && j < sizeof(pbuf) - 1) {
+                pbuf[j] = rest[j];
+                j++;
+            }
+            pbuf[j] = '\0';
+            uint32_t pid = 0;
+            if (parse_pid(pbuf, &pid) != 0) return SYNTH_NONE;
+            task_t *t = find_task(pid);
+            if (!t) return SYNTH_NONE;
+            if (rest[j] == '\0') {
+                out->kind = SYNTH_PIDDIR;
+                out->task = t;
+                return SYNTH_PIDDIR;
+            }
+            if (rest[j] == '/') {
+                const char *fn = rest + j + 1;
+                for (i = 0; i < NPID_FILES; i++) {
+                    if (strings_equal(fn, pid_files[i])) {
+                        out->kind = SYNTH_PIDFILE;
+                        out->task = t;
+                        out->slot = (int)i;
+                        return SYNTH_PIDFILE;
+                    }
+                }
+            }
+            return SYNTH_NONE;
+        }
+    }
+    // /sys tree
+    for (i = 0; i < NSYS_DIRS; i++) {
+        if (strings_equal(resolved, sys_dirs[i])) {
+            out->kind = SYNTH_SYSDIR;
+            out->slot = (int)i;
+            return SYNTH_SYSDIR;
+        }
+    }
+    {
+        const char *prefix = "/sys/devices/virtual/dmi/id/";
+        unsigned int pl = 0;
+        while (prefix[pl]) pl++;
+        unsigned int match = 1;
+        for (i = 0; i < pl; i++) {
+            if (resolved[i] != prefix[i]) {
+                match = 0;
+                break;
+            }
+        }
+        if (match) {
+            const char *fn = resolved + pl;
+            for (i = 0; i < NSYS_FILES; i++) {
+                if (strings_equal(fn, sys_files[i])) {
+                    out->kind = SYNTH_SYSFILE;
+                    out->slot = (int)i;
+                    return SYNTH_SYSFILE;
+                }
+            }
+        }
+    }
+    return SYNTH_NONE;
+}
+
+// inos: files 100+slot, pid dirs 2000+pid, pid files 100000+pid*8+slot,
+// sys files 5000+slot, sys dirs 6000+index
+static unsigned int synth_ino(struct synth_id *sid){
+    if (sid->kind == SYNTH_PROCDIR) return 200;
+    if (sid->kind == SYNTH_PROFILE) return 100 + (unsigned int)sid->slot;
+    if (sid->kind == SYNTH_PIDDIR && sid->task) return 2000 + sid->task->pid;
+    if (sid->kind == SYNTH_PIDFILE && sid->task)
+        return 100000 + sid->task->pid * 8 + (unsigned int)sid->slot;
+    if (sid->kind == SYNTH_SYSFILE) return 5000 + (unsigned int)sid->slot;
+    if (sid->kind == SYNTH_SYSDIR) return 6000 + (unsigned int)sid->slot;
+    return 1;
+}
+
+static void synth_fill_stat(struct synth_id *sid, unsigned int size,
+                            unsigned int mode, struct stat *st){
+    unsigned int s, ns;
+    for (unsigned int i = 0; i < sizeof(struct stat); i++) ((char*)st)[i] = 0;
+    st->st_size = size;
+    st->st_mode = mode;
+    st->st_ino = synth_ino(sid);
+    vfs_now(&s, &ns);
+    st->st_atim_sec = s;
+    st->st_atim_nsec = ns;
+    st->st_mtim_sec = s;
+    st->st_mtim_nsec = ns;
+    st->st_ctim_sec = s;
+    st->st_ctim_nsec = ns;
+}
+
+// materialize a synthetic node (NOT inserted into the node list).
+// files get generated content, dirs an empty shell. NULL on failure.
+static struct vfs_node *synth_open(const char *resolved, struct synth_id *sid){
+    char content[2048];
+    int len = -1;
+    int is_dir = (sid->kind == SYNTH_PIDDIR || sid->kind == SYNTH_SYSDIR ||
+                  sid->kind == SYNTH_PROCDIR);
+    if (!is_dir) {
+        if (sid->kind == SYNTH_PIDFILE)
+            len = proc_gen_pidfile(sid->task, sid->slot, content, sizeof(content));
+        else if (sid->kind == SYNTH_PROFILE)
+            len = proc_gen_file(sid->slot, content, sizeof(content));
+        else if (sid->kind == SYNTH_SYSFILE)
+            len = sys_gen_file(sid->slot, content, sizeof(content));
+        else
+            return NULL;
+        if (len < 0) return NULL;
+    } else {
+        len = 0;
+    }
+    {
+        struct vfs_node *node = (struct vfs_node*)kmalloc(sizeof(struct vfs_node));
+        char *data = NULL;
+        if (!node) return NULL;
+        if (len > 0) {
+            data = (char*)kmalloc((unsigned int)len);
+            if (!data) {
+                kfree(node);
+                return NULL;
+            }
+            for (int i = 0; i < len; i++) data[i] = content[i];
+        }
+        {
+            unsigned int i = 0;
+            while (resolved[i] && i < sizeof(node->path) - 1) {
+                node->path[i] = resolved[i];
+                i++;
+            }
+            node->path[i] = '\0';
+        }
+        node->data = data;
+        node->size = (unsigned int)(len > 0 ? len : 0);
+        node->capacity = node->size;
+        node->mode = is_dir ? S_IFDIR : S_IFREG;
+        node->ino = synth_ino(sid);
+        node->refs = 1;
+        node->synth = 1;
+        node->data_refs = NULL;
+        stamp_create(node);
+        node->next = NULL;
+        return node;
+    }
+}
+
+static int synth_stat(struct synth_id *sid, struct stat *st){
+    if (sid->kind == SYNTH_PIDDIR || sid->kind == SYNTH_SYSDIR ||
+        sid->kind == SYNTH_PROCDIR) {
+        synth_fill_stat(sid, 0, S_IFDIR, st);
+        return 0;
+    }
+    {
+        char content[2048];
+        int len = -1;
+        if (sid->kind == SYNTH_PIDFILE)
+            len = proc_gen_pidfile(sid->task, sid->slot, content, sizeof(content));
+        else if (sid->kind == SYNTH_PROFILE)
+            len = proc_gen_file(sid->slot, content, sizeof(content));
+        else if (sid->kind == SYNTH_SYSFILE)
+            len = sys_gen_file(sid->slot, content, sizeof(content));
+        else
+            return -1;
+        if (len < 0) return -1;
+        synth_fill_stat(sid, (unsigned int)len, S_IFREG, st);
+        return 0;
+    }
+}
+
+// append one (ino, reclen, name) record; *written tracks the offset
+static void synth_emit(char *out, unsigned int *written, unsigned int bufsize,
+                       unsigned int ino, const char *name){
+    unsigned int nl = 0;
+    while (name[nl]) nl++;
+    {
+        unsigned int reclen = 4 + 4 + nl + 1;
+        if (*written + reclen > bufsize) return;
+        *((unsigned int*)(out + *written)) = ino;
+        *((unsigned int*)(out + *written + 4)) = reclen;
+        for (unsigned int i = 0; i <= nl; i++)
+            out[*written + 8 + i] = name[i];
+        *written += reclen;
+    }
+}
+
+static void synth_pid_to_dec(uint32_t pid, char *out){
+    char tmp[12];
+    int n = 0;
+    if (pid == 0) {
+        out[0] = '0';
+        out[1] = '\0';
+        return;
+    }
+    while (pid > 0 && n < 11) {
+        tmp[n++] = (char)('0' + pid % 10);
+        pid /= 10;
+    }
+    for (int i = 0; i < n; i++) out[i] = tmp[n - 1 - i];
+    out[n] = '\0';
+}
+
+static int synth_getdents(struct synth_id *sid, const char *dir_path,
+                          void *buf, unsigned int bufsize){
+    char *out = (char*)buf;
+    unsigned int written = 0;
+    unsigned int i = 0;
+    if (!buf || bufsize == 0) return -1;
+    if (sid->kind == SYNTH_PROCDIR) {
+        unsigned int self = synth_ino(sid);
+        synth_emit(out, &written, bufsize, self, ".");
+        synth_emit(out, &written, bufsize, 1, "..");
+        for (i = 0; i < NPROC_FILES; i++)
+            synth_emit(out, &written, bufsize, 100 + i, proc_files[i]);
+        {
+            task_t *head = sched_task_head();
+            if (head) {
+                task_t *t = head;
+                char name[12];
+                do {
+                    synth_pid_to_dec(t->pid, name);
+                    synth_emit(out, &written, bufsize, 2000 + t->pid, name);
+                    t = t->next;
+                } while (t != head);
+            }
+        }
+        (void)dir_path;
+        return (int)written;
+    }
+    if (sid->kind == SYNTH_PIDDIR && sid->task) {
+        synth_emit(out, &written, bufsize, 2000 + sid->task->pid, ".");
+        synth_emit(out, &written, bufsize, 1, "..");
+        for (i = 0; i < NPID_FILES; i++)
+            synth_emit(out, &written, bufsize,
+                       100000 + sid->task->pid * 8 + i, pid_files[i]);
+        (void)dir_path;
+        return (int)written;
+    }
+    if (sid->kind == SYNTH_SYSDIR) {
+        synth_emit(out, &written, bufsize, 6000 + (unsigned int)sid->slot, ".");
+        synth_emit(out, &written, bufsize, 1, "..");
+        if (sid->slot == 0) synth_emit(out, &written, bufsize, 6001, "devices");
+        else if (sid->slot == 1) synth_emit(out, &written, bufsize, 6002, "virtual");
+        else if (sid->slot == 2) synth_emit(out, &written, bufsize, 6003, "dmi");
+        else if (sid->slot == 3) synth_emit(out, &written, bufsize, 6004, "id");
+        else if (sid->slot == 4) {
+            for (i = 0; i < NSYS_FILES; i++)
+                synth_emit(out, &written, bufsize, 5000 + i, sys_files[i]);
+        }
+        (void)dir_path;
+        return (int)written;
+    }
+    return -1;
+}
+
 // drop our hold on a shared data blob, freeing it for the last user
 static void data_release(struct vfs_node *node){
     if (!node || !node->data_refs) return;
@@ -255,6 +577,7 @@ static void data_release(struct vfs_node *node){
     }
     node->data = NULL;
     node->data_refs = NULL;
+    node->synth = 0;
 }
 
 // copy-on-write: give this node a private data blob before mutating.
@@ -324,6 +647,16 @@ struct vfs_node *vfs_open(const char *path, int flags){
     char resolved[256];
     vfs_resolve_path(cwd, path, resolved, sizeof(resolved));
 
+    // synthetic /proc + /sys
+    {
+        struct synth_id sid;
+        int kind = synth_lookup(resolved, &sid);
+        if (kind != SYNTH_NONE) {
+            if (flags & 0x40) return NULL; // read-only tree: no creation
+            return synth_open(resolved, &sid);
+        }
+    }
+
     struct vfs_node *node = find_node(resolved);
     // follow symlinks on open (like Linux without O_NOFOLLOW)
     if (node && is_symlink_node(node)) {
@@ -363,6 +696,7 @@ struct vfs_node *vfs_open(const char *path, int flags){
     node->ino = next_ino++;
     node->refs = 1;
     node->data_refs = NULL;
+    node->synth = 0;
     stamp_create(node);
     bump_parent(resolved);
     node->next = nodes;
@@ -373,6 +707,11 @@ struct vfs_node *vfs_open(const char *path, int flags){
 int vfs_close(struct vfs_node *node){
     if (!node) return -1;
     if (node != &root && node->refs > 0) node->refs--;
+    // synthetic nodes live only as long as someone holds them
+    if (node->synth && node != &root && node->refs <= 0) {
+        if (node->data) kfree(node->data);
+        kfree(node);
+    }
     return 0;
 }
 
@@ -398,6 +737,7 @@ int vfs_read(struct vfs_node *node, unsigned int offset, void *buffer, unsigned 
 int vfs_write(struct vfs_node *node, unsigned int offset, const void *buffer, unsigned int count){
     if (!node || !buffer || (node->mode & S_IFDIR)) return -1;
     if (is_symlink_node(node)) return -1;
+    if (node->synth) return -1; // /proc + /sys are read-only
     // /dev/null and /dev/zero discard writes
     if (strings_equal(node->path, "/dev/null")) return (int)count;
     if (strings_equal(node->path, "/dev/zero")) return (int)count;
@@ -427,6 +767,12 @@ int vfs_stat(const char *path, struct stat *st){
     const char *cwd = (task && task->cwd[0]) ? task->cwd : "/";
     char resolved[256];
     vfs_resolve_path(cwd, path, resolved, sizeof(resolved));
+    {
+        struct synth_id sid;
+        int kind = synth_lookup(resolved, &sid);
+        if (kind != SYNTH_NONE)
+            return synth_stat(&sid, st);
+    }
     if (follow_symlinks(resolved) != 0) return -1;
 
     struct vfs_node *node = find_node(resolved);
@@ -453,6 +799,7 @@ static void bump_mtime(struct vfs_node *node){
 
 int vfs_truncate(struct vfs_node *node, unsigned int length){
     if (!node || (node->mode & S_IFDIR) || is_symlink_node(node)) return -1;
+    if (node->synth) return -1;
     if (data_cow(node) != 0) return -1;
     if (length < node->size) {
         node->size = length;
@@ -483,6 +830,10 @@ int vfs_unlink(const char *path){
     char resolved[256];
     vfs_resolve_path(cwd, path, resolved, sizeof(resolved));
 
+    {
+        struct synth_id sid;
+        if (synth_lookup(resolved, &sid) != SYNTH_NONE) return -1;
+    }
     if (strings_equal(resolved, "/")) return -1;
     struct vfs_node **link = &nodes;
     while (*link) {
@@ -509,9 +860,14 @@ int vfs_mkdir(const char *path){
     char resolved[256];
     vfs_resolve_path(cwd, path, resolved, sizeof(resolved));
 
+    {
+        struct synth_id sid;
+        if (synth_lookup(resolved, &sid) != SYNTH_NONE) return -1;
+    }
     if (find_node(resolved)) return -1;
     int length = string_length(resolved);
-    if (resolved[0] != '/' || length == 0 || length >= 256) return -1;    struct vfs_node *node = (struct vfs_node*)kmalloc(sizeof(struct vfs_node));
+    if (resolved[0] != '/' || length == 0 || length >= 256) return -1;
+    struct vfs_node *node = (struct vfs_node*)kmalloc(sizeof(struct vfs_node));
     if (!node) return -1;
     for (int i = 0; i <= length; i++) node->path[i] = resolved[i];
     node->data = NULL;
@@ -521,6 +877,7 @@ int vfs_mkdir(const char *path){
     node->ino = next_ino++;
     node->refs = 1;
     node->data_refs = NULL;
+    node->synth = 0;
     stamp_create(node);
     bump_parent(resolved);
     node->next = nodes;
@@ -537,6 +894,11 @@ int vfs_link(const char *path, const char *target_path){
     vfs_resolve_path(cwd, path, resolved, sizeof(resolved));
     vfs_resolve_path(cwd, target_path, target_resolved, sizeof(target_resolved));
 
+    {
+        struct synth_id sid;
+        if (synth_lookup(resolved, &sid) != SYNTH_NONE) return -1;
+        if (synth_lookup(target_resolved, &sid) != SYNTH_NONE) return -1;
+    }
     struct vfs_node *target = find_node(target_resolved);
     if (!target || (target->mode & S_IFDIR)) return -1;
     if (find_node(resolved)) return -1;
@@ -552,6 +914,7 @@ int vfs_link(const char *path, const char *target_path){
     node->ino = next_ino++;
     node->refs = 1;
     node->data_refs = NULL;
+    node->synth = 0;
     if (data_share(node, target) != 0) {
         kfree(node);
         return -1;
@@ -571,6 +934,23 @@ int vfs_chdir(const char *path){
     const char *cwd = (task && task->cwd[0]) ? task->cwd : "/";
     char resolved[256];
     vfs_resolve_path(cwd, path, resolved, sizeof(resolved));
+    {
+        struct synth_id sid;
+        int kind = synth_lookup(resolved, &sid);
+        // synthetic dirs are navigable; files are not
+        if (kind == SYNTH_PROCDIR || kind == SYNTH_PIDDIR || kind == SYNTH_SYSDIR) {
+            if (task) {
+                unsigned int i = 0;
+                while (resolved[i] && i < sizeof(task->cwd) - 1) {
+                    task->cwd[i] = resolved[i];
+                    i++;
+                }
+                task->cwd[i] = '\0';
+            }
+            return 0;
+        }
+        if (kind != SYNTH_NONE) return -1;
+    }
     if (follow_symlinks(resolved) != 0) return -1;
 
     struct vfs_node *node = find_node(resolved);
@@ -607,6 +987,14 @@ int vfs_getdents(const char *path, void *buf, unsigned int bufsize) {
     const char *cwd = (task && task->cwd[0]) ? task->cwd : "/";
     char dir_path[256];
     vfs_resolve_path(cwd, path, dir_path, sizeof(dir_path));
+
+    {
+        struct synth_id sid;
+        int kind = synth_lookup(dir_path, &sid);
+        if (kind == SYNTH_PROCDIR || kind == SYNTH_PIDDIR || kind == SYNTH_SYSDIR)
+            return synth_getdents(&sid, dir_path, buf, bufsize);
+        if (kind != SYNTH_NONE) return -1;
+    }
 
     // must exist and be a directory
     struct vfs_node *dir = find_node(dir_path);
@@ -714,6 +1102,12 @@ int vfs_lstat(const char *path, struct stat *st){
     const char *cwd = (task && task->cwd[0]) ? task->cwd : "/";
     char resolved[256];
     vfs_resolve_path(cwd, path, resolved, sizeof(resolved));
+    {
+        struct synth_id sid;
+        int kind = synth_lookup(resolved, &sid);
+        if (kind != SYNTH_NONE)
+            return synth_stat(&sid, st);
+    }
     struct vfs_node *node = find_node(resolved);
     if (!node) return -1;
     fill_stat(node, st);
@@ -727,6 +1121,10 @@ int vfs_symlink(const char *target, const char *linkpath){
     char resolved[256];
     char target_buf[256];
     vfs_resolve_path(cwd, linkpath, resolved, sizeof(resolved));
+    {
+        struct synth_id sid;
+        if (synth_lookup(resolved, &sid) != SYNTH_NONE) return -1;
+    }
     if (find_node(resolved)) return -1;
     int rlen = string_length(resolved);
     if (resolved[0] != '/' || rlen == 0 || rlen >= 256) return -1;
@@ -753,6 +1151,7 @@ int vfs_symlink(const char *target, const char *linkpath){
     node->ino = next_ino++;
     node->refs = 1;
     node->data_refs = NULL;
+    node->synth = 0;
     stamp_create(node);
     bump_parent(resolved);
     node->next = nodes;
@@ -782,6 +1181,11 @@ int vfs_rename(const char *oldpath, const char *newpath){
     char new_r[256];
     vfs_resolve_path(cwd, oldpath, old_r, sizeof(old_r));
     vfs_resolve_path(cwd, newpath, new_r, sizeof(new_r));
+    {
+        struct synth_id sid;
+        if (synth_lookup(old_r, &sid) != SYNTH_NONE) return -1;
+        if (synth_lookup(new_r, &sid) != SYNTH_NONE) return -1;
+    }
     if (strings_equal(old_r, "/") || strings_equal(new_r, "/")) return -1;
     if (strings_equal(old_r, new_r)) return 0;
     struct vfs_node *node = find_node(old_r);
@@ -863,6 +1267,10 @@ int vfs_truncate_path(const char *path, unsigned int length){
     const char *cwd = (task && task->cwd[0]) ? task->cwd : "/";
     char resolved[256];
     vfs_resolve_path(cwd, path, resolved, sizeof(resolved));
+    {
+        struct synth_id sid;
+        if (synth_lookup(resolved, &sid) != SYNTH_NONE) return -1;
+    }
     if (follow_symlinks(resolved) != 0) return -1;
     struct vfs_node *node = find_node(resolved);
     if (!node || (node->mode & S_IFDIR) || is_symlink_node(node)) return -1;
@@ -877,6 +1285,11 @@ int vfs_access(const char *path, int mode){
     const char *cwd = (task && task->cwd[0]) ? task->cwd : "/";
     char resolved[256];
     vfs_resolve_path(cwd, path, resolved, sizeof(resolved));
+    {
+        struct synth_id sid;
+        int kind = synth_lookup(resolved, &sid);
+        if (kind != SYNTH_NONE) return 0;
+    }
     if (follow_symlinks(resolved) != 0) return -1;
     return find_node(resolved) ? 0 : -1;
 }
@@ -931,6 +1344,10 @@ int vfs_utimens(const char *path, const long times[4], int flags){
     const char *cwd = (task && task->cwd[0]) ? task->cwd : "/";
     char resolved[256];
     vfs_resolve_path(cwd, path, resolved, sizeof(resolved));
+    {
+        struct synth_id sid;
+        if (synth_lookup(resolved, &sid) != SYNTH_NONE) return -1;
+    }
     struct vfs_node *node;
     if (flags == VFS_AT_SYMLINK_NOFOLLOW) {
         node = find_node(resolved);

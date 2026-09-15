@@ -37,46 +37,6 @@ index 4b34149..e7d2ac2 100644
  
  //kbuild:lib-$(CONFIG_CAT) += cat.o
  
- diff --git a/coreutils/ls.c b/coreutils/ls.c
- index b69b804..6b6dd0a 100644
- --- a/coreutils/ls.c
- +++ b/coreutils/ls.c
-@@ -92,7 +92,7 @@
- //config:	configurable, and the output may not be legible on
- //config:	many output screens.
- 
--//applet:IF_LS(APPLET_NOEXEC(ls, ls, BB_DIR_BIN, BB_SUID_DROP, ls))
-+//applet:IF_LS(APPLET_NOFORK(ls, ls, BB_DIR_BIN, BB_SUID_DROP, ls))
- 
- //kbuild:lib-$(CONFIG_LS) += ls.o
-+
-+diff --git a/editors/vi.c b/editors/vi.c
-+index 0000000..0000000 100644
-+--- a/editors/vi.c
-++++ b/editors/vi.c
-+@@ -176,7 +176,7 @@
-+ //config:	Enable more verbose reporting of the results of yank, change,
-+ //config:	delete, undo and substitution commands.
-+ 
-+-//applet:IF_VI(APPLET(vi, BB_DIR_BIN, BB_SUID_DROP))
-++//applet:IF_VI(APPLET_NOFORK(vi, vi, BB_DIR_BIN, BB_SUID_DROP, vi))
-+ 
-+ //kbuild:lib-$(CONFIG_VI) += vi.o
- 
-diff --git a/scripts/trylink b/scripts/trylink
-index 2255dee..8b846e7 100755
---- a/scripts/trylink
-+++ b/scripts/trylink
-@@ -84,7 +84,8 @@ A_FILES="$6"
- # a real utmp library in LDLIBS, dropping it "works" but resulting binary
- # does not work properly).
- LDLIBS="$7"
--CONFIG_EXTRA_LDLIBS="$8"
-+shift 7
-+CONFIG_EXTRA_LDLIBS="$*"
- 
- # The --sort-section option is not supported by older versions of ld
- SORT_SECTION="-Wl,--sort-section,alignment"
 diff --git a/coreutils/cp.c b/coreutils/cp.c
 index ee40af5..e13b7f5 100644
 --- a/coreutils/cp.c
@@ -102,6 +62,19 @@ index 2dcf79c..e762adf 100644
 +//applet:IF_LN(APPLET_NOFORK(ln, ln, BB_DIR_BIN, BB_SUID_DROP, ln))
  
  //kbuild:lib-$(CONFIG_LN) += ln.o
+ 
+diff --git a/coreutils/ls.c b/coreutils/ls.c
+index b69b804..6b6dd0a 100644
+--- a/coreutils/ls.c
++++ b/coreutils/ls.c
+@@ -92,7 +92,7 @@
+ //config:	configurable, and the output may not be legible on
+ //config:	many output screens.
+ 
+-//applet:IF_LS(APPLET_NOEXEC(ls, ls, BB_DIR_BIN, BB_SUID_DROP, ls))
++//applet:IF_LS(APPLET_NOFORK(ls, ls, BB_DIR_BIN, BB_SUID_DROP, ls))
+ 
+ //kbuild:lib-$(CONFIG_LS) += ls.o
  
 diff --git a/coreutils/mv.c b/coreutils/mv.c
 index cf6169a..0783ee1 100644
@@ -142,3 +115,89 @@ index 2c2909e..1966633 100644
  
  //kbuild:lib-$(CONFIG_STAT) += stat.o
  
+diff --git a/editors/vi.c b/editors/vi.c
+index 2645afe..13005ae 100644
+--- a/editors/vi.c
++++ b/editors/vi.c
+@@ -176,7 +176,7 @@
+ //config:	Enable more verbose reporting of the results of yank, change,
+ //config:	delete, undo and substitution commands.
+ 
+-//applet:IF_VI(APPLET(vi, BB_DIR_BIN, BB_SUID_DROP))
++//applet:IF_VI(APPLET_NOFORK(vi, vi, BB_DIR_BIN, BB_SUID_DROP, vi))
+ 
+ //kbuild:lib-$(CONFIG_VI) += vi.o
+ 
+diff --git a/networking/hostname.c b/networking/hostname.c
+index 5491034..6678107 100644
+--- a/networking/hostname.c
++++ b/networking/hostname.c
+@@ -23,7 +23,7 @@
+ 
+ //                        APPLET_NOEXEC:name           main      location    suid_type     help
+ //applet:IF_DNSDOMAINNAME(APPLET_NOEXEC(dnsdomainname, hostname, BB_DIR_BIN, BB_SUID_DROP, dnsdomainname))
+-//applet:IF_HOSTNAME(     APPLET_NOEXEC(hostname,      hostname, BB_DIR_BIN, BB_SUID_DROP, hostname     ))
++//applet:IF_HOSTNAME(     APPLET_NOFORK(hostname,      hostname, BB_DIR_BIN, BB_SUID_DROP, hostname     ))
+ 
+ //kbuild: lib-$(CONFIG_HOSTNAME) += hostname.o
+ //kbuild: lib-$(CONFIG_DNSDOMAINNAME) += hostname.o
+diff --git a/procps/free.c b/procps/free.c
+index 0b68e1b..7644e55 100644
+--- a/procps/free.c
++++ b/procps/free.c
+@@ -52,6 +52,7 @@
+ //NB: if we implement -s or -c, need to stop being NOFORK!
+ 
+ #include "libbb.h"
++#include <sys/sysinfo.h>
+ #ifdef __linux__
+ # include <sys/sysinfo.h>
+ #endif
+diff --git a/procps/ps.c b/procps/ps.c
+index 03b9c41..7604424 100644
+--- a/procps/ps.c
++++ b/procps/ps.c
+@@ -50,7 +50,7 @@
+ //config:	depends on (PS || MINIPS) && DESKTOP
+ 
+ //                 APPLET_NOEXEC:name    main location    suid_type     help
+-//applet:IF_PS(    APPLET_NOEXEC(ps,     ps,  BB_DIR_BIN, BB_SUID_DROP, ps))
++//applet:IF_PS(    APPLET_NOFORK(ps,     ps,  BB_DIR_BIN, BB_SUID_DROP, ps))
+ //applet:IF_MINIPS(APPLET_NOEXEC(minips, ps,  BB_DIR_BIN, BB_SUID_DROP, ps))
+ 
+ //kbuild:lib-$(CONFIG_PS) += ps.o
+diff --git a/procps/uptime.c b/procps/uptime.c
+index 4fd0c9d..b6926e2 100644
+--- a/procps/uptime.c
++++ b/procps/uptime.c
+@@ -26,7 +26,7 @@
+ //config:	help
+ //config:	Display the number of users currently logged on.
+ 
+-//applet:IF_UPTIME(APPLET_NOEXEC(uptime, uptime, BB_DIR_USR_BIN, BB_SUID_DROP, uptime))
++//applet:IF_UPTIME(APPLET_NOFORK(uptime, uptime, BB_DIR_USR_BIN, BB_SUID_DROP, uptime))
+ 
+ //kbuild:lib-$(CONFIG_UPTIME) += uptime.o
+ 
+@@ -40,6 +40,7 @@
+ //usage:       "  1:55pm  up  2:30, load average: 0.09, 0.04, 0.00\n"
+ 
+ #include "libbb.h"
++#include <sys/sysinfo.h>
+ #ifdef __linux__
+ # include <sys/sysinfo.h>
+ #endif
+diff --git a/scripts/trylink b/scripts/trylink
+index 2255dee..8b846e7 100755
+--- a/scripts/trylink
++++ b/scripts/trylink
+@@ -84,7 +84,8 @@ A_FILES="$6"
+ # a real utmp library in LDLIBS, dropping it "works" but resulting binary
+ # does not work properly).
+ LDLIBS="$7"
+-CONFIG_EXTRA_LDLIBS="$8"
++shift 7
++CONFIG_EXTRA_LDLIBS="$*"
+ 
+ # The --sort-section option is not supported by older versions of ld
+ SORT_SECTION="-Wl,--sort-section,alignment"

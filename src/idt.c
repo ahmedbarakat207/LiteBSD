@@ -261,6 +261,7 @@ struct interrupt_frame *isr_common_handler(void *raw_frame) {
 struct interrupt_frame *irq_handler(unsigned int irq_num, struct interrupt_frame *frame){
     if(irq_num == 0){
         timer_tick();
+        sched_account_tick();
         frame = schedule(frame);
         // test
         //if (timer_ticks % 100 == 0) println("[TIMER] Timer tick.", VGA_COLOR_CYAN);

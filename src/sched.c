@@ -4,10 +4,59 @@
 #include "include/heap.h"
 #include "include/vfs.h"
 #include "include/gdt.h"
+#include "include/time.h"
 
 static task_t *current_task = NULL;
 static task_t *ready_queue = NULL;
 static uint32_t next_pid = 1; // pid = 0
+static unsigned long idle_ticks = 0;
+
+static void task_stats_init(task_t *task, const char *comm){
+    task->cpu_ticks = 0;
+    task->start_tick = timer_get_ticks();
+    {
+        unsigned int i = 0;
+        while (comm && comm[i] && i < sizeof(task->comm) - 1) {
+            task->comm[i] = comm[i];
+            i++;
+        }
+        task->comm[i] = '\0';
+    }
+    task->cmdline[0] = '\0';
+}
+
+// charge one timer tick: RUNNING tasks accrue CPU, everything else is idle
+void sched_account_tick(void){
+    if (current_task && current_task->state == TASK_RUNNING) {
+        current_task->cpu_ticks++;
+    } else {
+        idle_ticks++;
+    }
+}
+
+task_t *sched_task_head(void){
+    if (!ready_queue) return NULL;
+    return ready_queue->next;
+}
+
+uint32_t sched_next_pid(void){
+    return next_pid;
+}
+
+unsigned long sched_idle_ticks(void){
+    return idle_ticks;
+}
+
+int sched_task_count(void){
+    if (!ready_queue) return 0;
+    int n = 0;
+    task_t *t = ready_queue->next;
+    do {
+        n++;
+        t = t->next;
+    } while (t != ready_queue->next);
+    return n;
+}
 
 static void add_task(task_t *task){
     if(!ready_queue){
@@ -90,6 +139,7 @@ int create_task(void (*entry)(void)){
     task->ppid = 0;
     task->state = TASK_RUNNING;
     task->exit_code = 0;
+    task_stats_init(task, "kth");
     for (int i = 0; i < 3; i++) {
         struct file *f = (struct file*)kmalloc(sizeof(struct file));
         if (f) {
@@ -176,6 +226,7 @@ int create_user_task(void (*entry)(void)) {
     task->ppid = 0;
     task->state = TASK_RUNNING;
     task->exit_code = 0;
+    task_stats_init(task, "init");
     for (int i = 0; i < 3; i++) {
         struct file *f = (struct file*)kmalloc(sizeof(struct file));
         if (f) {
@@ -201,6 +252,8 @@ int create_user_task(void (*entry)(void)) {
         task->heap_brk = user_heap;
         task->heap_end = user_heap + 0x100000;
     }
+    task->img_size = 0;
+    task->img_snapshot = NULL;
 
     add_task(task);
     println("[SCHED] Created user task", VGA_COLOR_WHITE);
@@ -397,6 +450,14 @@ int fork_task(struct interrupt_frame *frame){
     task->user = current_task->user;
     task->state = TASK_RUNNING;
     task->exit_code = 0;
+    // fresh accounting for the kid; identity (name/cmdline) is inherited
+    // until exec replaces it, like Linux
+    task->cpu_ticks = 0;
+    task->start_tick = timer_get_ticks();
+    for (unsigned int i = 0; i < sizeof(task->comm); i++)
+        task->comm[i] = current_task->comm[i];
+    for (unsigned int i = 0; i < sizeof(task->cmdline); i++)
+        task->cmdline[i] = current_task->cmdline[i];
 
     if (current_task->user_stack_base) {
         uint32_t stack_size = current_task->user_stack_top - (uint32_t)current_task->user_stack_base;
@@ -413,8 +474,6 @@ int fork_task(struct interrupt_frame *frame){
         uint32_t stack_delta = (uint32_t)new_ustack - (uint32_t)current_task->user_stack_base;
         task->user_stack_base = new_ustack;
         task->user_stack_top = current_task->user_stack_top + stack_delta;
-        // only shift pointers that actually live in the old stack
-        // shifting everything blindly corrupts shit like a heap ebp
         uint32_t old_base = (uint32_t)current_task->user_stack_base;
         uint32_t old_top = current_task->user_stack_top;
         if (frame->useresp >= old_base && frame->useresp <= old_top) {
@@ -423,7 +482,21 @@ int fork_task(struct interrupt_frame *frame){
         if (frame->ebp >= old_base && frame->ebp <= old_top) {
             child_frame->ebp = frame->ebp + stack_delta;
         }
+
+        // walk the saved EBP linked list and adjust each pointer so leave/pop ebp
+        // remain on child's new stack instead of reverting to parent's stack
+        uint32_t cur = child_frame->ebp;
+        while (cur >= (uint32_t)new_ustack && cur + 4 <= (uint32_t)new_ustack + stack_size) {
+            uint32_t val = *(uint32_t*)cur;
+            if (val >= old_base && val <= old_top) {
+                *(uint32_t*)cur = val + stack_delta;
+                cur = val + stack_delta;
+            } else {
+                break;
+            }
+        }
     }
+
 
     for (int i = 0; i < MAX_FDS; i++){
         task->fds[i] = current_task->fds[i];
@@ -438,6 +511,9 @@ int fork_task(struct interrupt_frame *frame){
     task->heap_start = current_task->heap_start;
     task->heap_brk = current_task->heap_brk;
     task->heap_end = current_task->heap_end;
+
+    task->img_size = 0;
+    task->img_snapshot = NULL;
 
     add_task(task);
     // dad naps till kid execs or dies
@@ -469,6 +545,10 @@ int wait4(int pid, int *status, int options){
             if (status) *status = found->exit_code;
             int child_pid = (int)found->pid;
             remove_task(found);
+            if (found->img_snapshot) {
+                kfree(found->img_snapshot);
+                found->img_snapshot = NULL;
+            }
             kfree(found->stack_base);
             // stack might be shared with dad so only free it if its actually the kids own
             if (found->user_stack_base && found->user_stack_base != current_task->user_stack_base) kfree(found->user_stack_base);
@@ -487,7 +567,15 @@ void task_exit(int status){
     if (!current_task) return;
     current_task->state = TASK_ZOMBIE;
     current_task->exit_code = status;
+    if (current_task->img_snapshot) {
+        uint32_t isz = current_task->img_size;
+        for (uint32_t i = 0; i < isz; i++)
+            ((char*)0x8000000)[i] = ((char*)current_task->img_snapshot)[i];
+        kfree(current_task->img_snapshot);
+        current_task->img_snapshot = NULL;
+    }
     unblock_parent_of(current_task);
+
     if (ready_queue) {
         task_t *t = ready_queue->next;
         do {

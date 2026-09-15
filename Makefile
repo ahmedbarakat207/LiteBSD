@@ -16,9 +16,15 @@ CFLAGS := -std=gnu11 -ffreestanding -O2 -Wall -Wextra -m32 \
 	-fno-pie -fno-stack-protector -fno-builtin
 LDFLAGS := -m elf_i386 -T linker.ld
 
-.PHONY: all clean iso run-iso syslinux libc busybox initrd run
+# userspace program flags (link against libc)
+UCFLAGS  := -std=gnu11 -O2 -Wall -Wextra -m32 -fno-pie -fno-stack-protector \
+	-I libc/include
+ULDFLAGS := -m elf_i386 --gc-sections -Ttext=0x8000000
+PROGS    := $(BUILD_DIR)/top $(BUILD_DIR)/memstat $(BUILD_DIR)/pcinfo
 
-all: $(BUILD_DIR)/$(TARGET) busybox initrd
+.PHONY: all clean iso run-iso syslinux libc busybox initrd run programs
+
+all: $(BUILD_DIR)/$(TARGET) busybox programs initrd
 
 libc:
 	@if [ ! -f libc/Makefile ]; then \
@@ -32,12 +38,15 @@ busybox: libc
 		echo "Initializing busybox submodule..."; \
 		git submodule update --init busybox; \
 	fi
-	@if [ ! -f busybox/.config ]; then \
-		echo "Configuring busybox..."; \
+	@if [ ! -f busybox/.config ] || ! cmp -s busybox.config busybox/.config; then \
+		echo "Syncing busybox config..."; \
 		cp busybox.config busybox/.config; \
 	fi
-	@if ! grep -q "APPLET_NOFORK(cat" busybox/coreutils/cat.c 2>/dev/null; then \
+	@if git -C busybox apply --check --reverse ../busybox.patch >/dev/null 2>&1; then \
+		:; \
+	else \
 		echo "Patching busybox for LiteBSD..."; \
+		git -C busybox checkout -- . 2>/dev/null; \
 		git -C busybox apply ../busybox.patch || patch -p1 -d busybox < busybox.patch; \
 	fi
 	@if [ -f libc/build/libc.a ] && [ -f busybox/busybox ] && [ libc/build/libc.a -nt busybox/busybox ]; then \
@@ -46,7 +55,27 @@ busybox: libc
 	fi
 	$(MAKE) -C busybox -j4 ARCH=i386 CROSS_COMPILE=i686-elf-
 
-initrd: busybox | $(BUILD_DIR)
+programs: libc $(PROGS)
+
+$(BUILD_DIR)/top.o: src/programs/top.c | $(BUILD_DIR)
+	$(CC) $(UCFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/memstat.o: src/programs/memstat.c | $(BUILD_DIR)
+	$(CC) $(UCFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/pcinfo.o: src/programs/pcinfo.c | $(BUILD_DIR)
+	$(CC) $(UCFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/top: $(BUILD_DIR)/top.o
+	$(LD) $(ULDFLAGS) libc/build/crt0.o $< libc/build/libc.a -o $@
+
+$(BUILD_DIR)/memstat: $(BUILD_DIR)/memstat.o
+	$(LD) $(ULDFLAGS) libc/build/crt0.o $< libc/build/libc.a -o $@
+
+$(BUILD_DIR)/pcinfo: $(BUILD_DIR)/pcinfo.o
+	$(LD) $(ULDFLAGS) libc/build/crt0.o $< libc/build/libc.a -o $@
+
+initrd: busybox programs | $(BUILD_DIR)
 	rm -rf $(BUILD_DIR)/initrd
 	mkdir -p $(BUILD_DIR)/initrd/bin $(BUILD_DIR)/initrd/sbin $(BUILD_DIR)/initrd/etc
 	mkdir -p $(BUILD_DIR)/initrd/usr/bin $(BUILD_DIR)/initrd/usr/sbin $(BUILD_DIR)/initrd/usr/lib
@@ -55,11 +84,15 @@ initrd: busybox | $(BUILD_DIR)
 	chmod 1777 $(BUILD_DIR)/initrd/tmp
 	cp busybox/busybox $(BUILD_DIR)/initrd/bin/busybox
 	ln $(BUILD_DIR)/initrd/bin/busybox $(BUILD_DIR)/initrd/bin/sh 2>/dev/null || cp busybox/busybox $(BUILD_DIR)/initrd/bin/sh
-	for applet in bash ls cat echo pwd clear mkdir rmdir kill sleep test true false printf vi uname cp mv rm ln touch readlink realpath truncate stat; do \
+	for applet in bash ls cat echo pwd clear mkdir rmdir kill sleep test true false printf vi uname cp mv rm ln touch readlink realpath truncate stat free ps uptime hostname; do \
 		ln $(BUILD_DIR)/initrd/bin/busybox $(BUILD_DIR)/initrd/bin/$$applet 2>/dev/null || cp $(BUILD_DIR)/initrd/bin/busybox $(BUILD_DIR)/initrd/bin/$$applet; \
 		ln $(BUILD_DIR)/initrd/bin/busybox $(BUILD_DIR)/initrd/usr/bin/$$applet 2>/dev/null || true; \
 	done
 	ln $(BUILD_DIR)/initrd/bin/busybox $(BUILD_DIR)/initrd/sbin/busybox 2>/dev/null || true
+	# native programs: top, memstat, pcinfo
+	cp $(BUILD_DIR)/top     $(BUILD_DIR)/initrd/bin/top
+	cp $(BUILD_DIR)/memstat $(BUILD_DIR)/initrd/bin/memstat
+	cp $(BUILD_DIR)/pcinfo  $(BUILD_DIR)/initrd/bin/pcinfo
 	echo "root:x:0:0:root:/root:/bin/sh" > $(BUILD_DIR)/initrd/etc/passwd
 	echo "daemon:x:1:1:daemon:/usr/sbin:/bin/sh" >> $(BUILD_DIR)/initrd/etc/passwd
 	echo "nobody:x:65534:65534:nobody:/nonexistent:/bin/false" >> $(BUILD_DIR)/initrd/etc/passwd
@@ -68,6 +101,7 @@ initrd: busybox | $(BUILD_DIR)
 	echo "tty:x:5:" >> $(BUILD_DIR)/initrd/etc/group
 	echo "users:x:100:" >> $(BUILD_DIR)/initrd/etc/group
 	echo "litebsd" > $(BUILD_DIR)/initrd/etc/hostname
+	printf "NAME=LiteBSD\nID=litebsd\nVERSION=2.0\nVERSION_ID=2.0\nPRETTY_NAME=\"LiteBSD 2.0 (i386)\"\nHOME_URL=\"https://github.com/ahmedbarakat207/LiteBSD\"\n" > $(BUILD_DIR)/initrd/etc/os-release
 	echo "Welcome to LiteBSD (i386)" > $(BUILD_DIR)/initrd/etc/issue
 	printf "export PATH=/bin:/sbin:/usr/bin:/usr/sbin\nexport HOME=/root\nexport USER=root\nexport PS1='LiteBSD:\\\\w# '\nalias ll='ls -la'\nalias l='ls'\n" > $(BUILD_DIR)/initrd/etc/profile
 	printf "Welcome to LiteBSD!\nKernel: LiteBSD i386 microkernel\nUserspace: Upstream BusyBox 1.36.1\nC Library: c-lite micro-libc\n" > $(BUILD_DIR)/initrd/readme.txt
@@ -120,8 +154,11 @@ $(BUILD_DIR)/syscall.o: src/syscall.c src/include/syscall.h src/include/tty.h sr
 $(BUILD_DIR)/initrd.o: src/initrd.c src/include/initrd.h src/include/vfs.h src/include/tty.h src/include/heap.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/$(TARGET): $(BUILD_DIR)/boot.o $(BUILD_DIR)/kernel.o $(BUILD_DIR)/tty.o $(BUILD_DIR)/paging.o $(BUILD_DIR)/gdt.o $(BUILD_DIR)/idt.o $(BUILD_DIR)/keyboard.o $(BUILD_DIR)/heap.o $(BUILD_DIR)/time.o $(BUILD_DIR)/vfs.o $(BUILD_DIR)/sched.o $(BUILD_DIR)/syscall.o $(BUILD_DIR)/initrd.o linker.ld
-	$(LD) $(LDFLAGS) -o $@ $(BUILD_DIR)/boot.o $(BUILD_DIR)/kernel.o $(BUILD_DIR)/tty.o $(BUILD_DIR)/paging.o $(BUILD_DIR)/gdt.o $(BUILD_DIR)/idt.o $(BUILD_DIR)/keyboard.o $(BUILD_DIR)/heap.o $(BUILD_DIR)/time.o $(BUILD_DIR)/vfs.o $(BUILD_DIR)/sched.o $(BUILD_DIR)/syscall.o $(BUILD_DIR)/initrd.o
+$(BUILD_DIR)/sysinfo.o: src/sysinfo.c src/include/sysinfo.h src/include/heap.h src/include/time.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/$(TARGET): $(BUILD_DIR)/boot.o $(BUILD_DIR)/kernel.o $(BUILD_DIR)/tty.o $(BUILD_DIR)/paging.o $(BUILD_DIR)/gdt.o $(BUILD_DIR)/idt.o $(BUILD_DIR)/keyboard.o $(BUILD_DIR)/heap.o $(BUILD_DIR)/time.o $(BUILD_DIR)/vfs.o $(BUILD_DIR)/sched.o $(BUILD_DIR)/syscall.o $(BUILD_DIR)/initrd.o $(BUILD_DIR)/sysinfo.o linker.ld
+	$(LD) $(LDFLAGS) -o $@ $(BUILD_DIR)/boot.o $(BUILD_DIR)/kernel.o $(BUILD_DIR)/tty.o $(BUILD_DIR)/paging.o $(BUILD_DIR)/gdt.o $(BUILD_DIR)/idt.o $(BUILD_DIR)/keyboard.o $(BUILD_DIR)/heap.o $(BUILD_DIR)/time.o $(BUILD_DIR)/vfs.o $(BUILD_DIR)/sched.o $(BUILD_DIR)/syscall.o $(BUILD_DIR)/initrd.o $(BUILD_DIR)/sysinfo.o
 
 syslinux: $(SYSLINUX_SRC)/bios/core/isolinux.bin
 

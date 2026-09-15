@@ -7,3 +7,4 @@
 
 void *kmalloc(size_t size);
 void kfree(void* ptr);
+unsigned int heap_used_bytes(void);

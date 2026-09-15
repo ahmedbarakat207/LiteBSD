@@ -12,6 +12,13 @@ struct heap_block {
 
 static struct heap_block *free_list;
 
+// bytes currently handed out (headers + payloads of allocated blocks).
+static unsigned int heap_used;
+
+unsigned int heap_used_bytes(void){
+    return heap_used;
+}
+
 static unsigned int align_size(size_t size){
     return ((unsigned int)size + 3) & ~3U;
 }
@@ -44,6 +51,7 @@ void *kmalloc(size_t size) {
             }
             block->next = NULL;
             block->magic = HEAP_BLOCK_ALLOCATED;
+            heap_used += sizeof(struct heap_block) + block->size;
             return (void *)(block + 1);
         }
         link = &block->next;
@@ -60,6 +68,7 @@ void *kmalloc(size_t size) {
     block->size = requested;
     block->magic = HEAP_BLOCK_ALLOCATED;
     block->next = NULL;
+    heap_used += total;
     return (void *)(block + 1);
 }
 
@@ -74,6 +83,7 @@ void kfree(void *ptr){
         (unsigned int)block >= heap_begin) {
         return;
     }
+    heap_used -= sizeof(struct heap_block) + block->size;
 
     struct heap_block **link = &free_list;
     while (*link != NULL && (unsigned int)*link < (unsigned int)block) {

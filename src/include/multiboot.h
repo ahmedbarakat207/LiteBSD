@@ -33,6 +33,7 @@ struct mb_mod {
 };
 
 #define MB_INFO_MODS 0x8
+#define MB_INFO_MEM 0x1
 #define MULTIBOOT_INFO_MODS MB_INFO_MODS
 
 typedef struct mb_info mb_info_t;

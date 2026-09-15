@@ -257,7 +257,6 @@ static int sys_read(uint32_t fd, uint32_t buffer, uint32_t count){
 static int sys_exit(uint32_t status, uint32_t unused1, uint32_t unused2){
     (void)unused1;
     (void)unused2;
-    println("[KERNEL] Task exiting", VGA_COLOR_WHITE);
     task_t *task = scheduler_current_task();
     uint32_t ppid = task ? task->ppid : 1;
     task_exit((int)status);
@@ -571,6 +570,20 @@ static int sys_execve_impl(struct interrupt_frame *frame, uint32_t path, uint32_
         exec_free_vec(env_bufs, envc);
         return -1;
     }
+    task_t *cur_t = scheduler_current_task();
+    if (cur_t && cur_t->ppid != 0 && !cur_t->img_snapshot) {
+        task_t *p = find_task(cur_t->ppid);
+        if (p && p->img_size > 0 && p->img_size <= 0x400000) {
+            void *snap = kmalloc(p->img_size);
+            if (snap) {
+                for (uint32_t i = 0; i < p->img_size; i++)
+                    ((char*)snap)[i] = ((char*)USER_LOAD_ADDR)[i];
+                cur_t->img_snapshot = snap;
+                cur_t->img_size = p->img_size;
+            }
+        }
+    }
+
     for (uint32_t i = 0; i < clear_end; i++) {
         ((char*)USER_LOAD_ADDR)[i] = 0;
     }
@@ -642,6 +655,36 @@ static int sys_execve_impl(struct interrupt_frame *frame, uint32_t path, uint32_
 
     task_t *task = scheduler_current_task();
     if (task) {
+        task->img_size = clear_end;
+        // publish identity for /proc: comm = basename of the final image,
+        // cmdline = NUL-joined argv snapshot (capped, Linux-style)
+        {
+            unsigned int bl = 0, last = 0;
+            while (bl < sizeof(exec_path) && exec_path[bl]) {
+                if (exec_path[bl] == '/') last = bl + 1;
+                bl++;
+            }
+            unsigned int ci = 0;
+            while (exec_path[last + ci] && ci < sizeof(task->comm) - 1) {
+                task->comm[ci] = exec_path[last + ci];
+                ci++;
+            }
+            task->comm[ci] = '\0';
+            if (ci == 0) {
+                task->comm[0] = '?';
+                task->comm[1] = '\0';
+            }
+        }
+        {
+            unsigned int o = 0;
+            for (unsigned int k = 0; k < sizeof(task->cmdline); k++)
+                task->cmdline[k] = '\0';
+            for (uint32_t i = 0; i < argc && o < sizeof(task->cmdline) - 1; i++) {
+                for (uint32_t j = 0; j <= arg_lens[i] && o < sizeof(task->cmdline) - 1; j++)
+                    task->cmdline[o++] = arg_bufs[i][j];
+            }
+            task->cmdline[o] = '\0';
+        }
         // stack might be dads so dont free shared shit, just ditch it
         void *old_base = task->user_stack_base;
         int shared = 0;
@@ -652,8 +695,7 @@ static int sys_execve_impl(struct interrupt_frame *frame, uint32_t path, uint32_
         if (old_base && !shared) kfree(old_base);
         task->user_stack_base = stack;
         task->user_stack_top = stack_top;
-        // kid execd so poke dad awake, kid has its own stack now
-        task_unblock(task->ppid);
+        // dad stays blocked until kid exits and its image is restored
     } else {
         // no task?? that shouldnt happen lol, dont leak
         kfree(stack);
@@ -1181,3 +1223,4 @@ struct interrupt_frame *syscall_handler(struct interrupt_frame *frame){
     }
     return frame;
 }
+

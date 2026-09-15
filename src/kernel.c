@@ -8,6 +8,7 @@
 #include "include/syscall.h"
 #include "include/initrd.h"
 #include "include/multiboot.h"
+#include "include/sysinfo.h"
 
 static void user_init(void){
     println("[USER_INIT] Starting user_init...", VGA_COLOR_LIGHT_CYAN);
@@ -58,6 +59,7 @@ void kernel_main(struct mb_info *info){
         if (mods_count >= 1) {
             uint32_t start = mods[0].mod_start;
             uint32_t end = mods[0].mod_end;
+            if (end > start) kern_set_initrd_bytes(end - start);
             initrd_load(start, end);
         } else {
             println("[KERNEL] No initrd module found.", VGA_COLOR_RED);
@@ -65,6 +67,10 @@ void kernel_main(struct mb_info *info){
     } else {
         println("[KERNEL] No multiboot modules present.", VGA_COLOR_RED);
     }
+    if (info && (info->flags & MB_INFO_MEM)) {
+        kern_set_mem_total_kb(info->mem_lower + info->mem_upper);
+    }
+    sysinfo_init();
 
 
     pic_remap();
