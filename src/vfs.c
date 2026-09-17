@@ -3,6 +3,8 @@
 #include "include/sched.h"
 #include "include/time.h"
 #include "include/sysinfo.h"
+#include "include/fb.h"
+
 
 struct vfs_node {
     char path[256];
@@ -634,7 +636,12 @@ static void fill_stat(struct vfs_node *node, struct stat *st){
     st->st_mtim_nsec = node->mtime_nsec;
     st->st_ctim_sec = node->ctime;
     st->st_ctim_nsec = node->ctime_nsec;
+    if (strings_equal(node->path, "/dev/fb0")) {
+        st->st_size = fb_is_active() ? (fb_get_height() * fb_get_pitch()) : 0;
+        st->st_mode = S_IFCHR | 0666;
+    }
 }
+
 
 struct vfs_node *vfs_find_node(const char *path) {
     return find_node(path);
@@ -727,6 +734,16 @@ int vfs_read(struct vfs_node *node, unsigned int offset, void *buffer, unsigned 
         for (unsigned int i = 0; i < count; i++) ((char*)buffer)[i] = 0;
         return (int)count;
     }
+    if (strings_equal(node->path, "/dev/fb0")) {
+        if (!fb_is_active()) return -1;
+        unsigned int fb_size = fb_get_height() * fb_get_pitch();
+        if (offset >= fb_size) return 0;
+        unsigned int available = fb_size - offset;
+        if (count > available) count = available;
+        const char *fb_ptr = (const char *)(fb_get_addr() + offset);
+        for (unsigned int i = 0; i < count; i++) ((char*)buffer)[i] = fb_ptr[i];
+        return (int)count;
+    }
     if (offset >= node->size) return 0;
     unsigned int available = node->size - offset;
     if (count > available) count = available;
@@ -741,6 +758,18 @@ int vfs_write(struct vfs_node *node, unsigned int offset, const void *buffer, un
     // /dev/null and /dev/zero discard writes
     if (strings_equal(node->path, "/dev/null")) return (int)count;
     if (strings_equal(node->path, "/dev/zero")) return (int)count;
+    if (strings_equal(node->path, "/dev/fb0")) {
+        if (!fb_is_active()) return -1;
+        unsigned int fb_size = fb_get_height() * fb_get_pitch();
+        if (offset >= fb_size) return 0;
+        unsigned int available = fb_size - offset;
+        if (count > available) count = available;
+        char *fb_ptr = (char *)(fb_get_addr() + offset);
+        for (unsigned int i = 0; i < count; i++) fb_ptr[i] = ((const char*)buffer)[i];
+        bump_mtime(node);
+        return (int)count;
+    }
+
     if (data_cow(node) != 0) return -1;
     if (data_cow(node) != 0) return -1;
     unsigned int required = offset + count;
@@ -1274,7 +1303,7 @@ int vfs_truncate_path(const char *path, unsigned int length){
     if (follow_symlinks(resolved) != 0) return -1;
     struct vfs_node *node = find_node(resolved);
     if (!node || (node->mode & S_IFDIR) || is_symlink_node(node)) return -1;
-    if (strings_equal(node->path, "/dev/null") || strings_equal(node->path, "/dev/zero")) return 0;
+    if (strings_equal(node->path, "/dev/null") || strings_equal(node->path, "/dev/zero") || strings_equal(node->path, "/dev/fb0")) return 0;
     return vfs_truncate(node, length);
 }
 
@@ -1333,7 +1362,7 @@ static int apply_utimens(struct vfs_node *node, const long times[4]){
 
 int vfs_futimens(struct vfs_node *node, const long times[4]){
     if (!node) return -1;
-    if (strings_equal(node->path, "/dev/null") || strings_equal(node->path, "/dev/zero")) return 0;
+    if (strings_equal(node->path, "/dev/null") || strings_equal(node->path, "/dev/zero") || strings_equal(node->path, "/dev/fb0")) return 0;
     return apply_utimens(node, times);
 }
 
@@ -1356,6 +1385,13 @@ int vfs_utimens(const char *path, const long times[4], int flags){
         node = find_node(resolved);
     }
     if (!node) return -1;
-    if (strings_equal(node->path, "/dev/null") || strings_equal(node->path, "/dev/zero")) return 0;
+    if (strings_equal(node->path, "/dev/null") || strings_equal(node->path, "/dev/zero") || strings_equal(node->path, "/dev/fb0")) return 0;
     return apply_utimens(node, times);
 }
+
+int vfs_is_fb0(struct vfs_node *node) {
+    if (!node) return 0;
+    return strings_equal(node->path, "/dev/fb0");
+}
+
+

@@ -1,10 +1,16 @@
+#ifndef VFS_H
+#define VFS_H
+
 #include <stdint.h>
 
 struct vfs_node;
 
-#define S_IFREG 0x8000
+#define S_IFCHR 0x2000
 #define S_IFDIR 0x4000
+#define S_IFBLK 0x6000
+#define S_IFREG 0x8000
 #define S_IFLNK 0xA000
+
 
 // for utimens(2): only these flag bits are accepted
 #define VFS_AT_SYMLINK_NOFOLLOW 0x100
@@ -60,3 +66,7 @@ void vfs_resolve_path(const char *cwd, const char *path, char *out, unsigned int
 struct vfs_node *vfs_find_node(const char *path);
 int vfs_getdents(const char *path, void *buf, unsigned int bufsize);
 int vfs_getdents_by_node(struct vfs_node *node, void *buf, unsigned int bufsize);
+int vfs_is_fb0(struct vfs_node *node);
+
+#endif /* VFS_H */
+

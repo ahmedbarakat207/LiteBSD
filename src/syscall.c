@@ -6,7 +6,9 @@
 #include "include/heap.h"
 #include "include/vfs.h"
 #include "include/time.h"
+#include "include/fb.h"
 #include <stdint.h>
+
 
 #define ELF_PT_LOAD 1
 
@@ -740,9 +742,16 @@ static int sys_brk(uint32_t addr, uint32_t unused1, uint32_t unused2){
     return (int)task->heap_brk;
 }
 
-static int sys_mmap(uint32_t length, uint32_t unused1, uint32_t unused2){
-    (void)unused1;
-    (void)unused2;
+static int sys_mmap(uint32_t length, uint32_t fd, uint32_t offset){
+    task_t *task = scheduler_current_task();
+    if (task && (int)fd >= 0 && fd < MAX_FDS && task->fds[fd] && task->fds[fd]->node) {
+        if (vfs_is_fb0(task->fds[fd]->node)) {
+            if (!fb_is_active()) return -1;
+            uint32_t fb_size = fb_get_height() * fb_get_pitch();
+            if (offset >= fb_size) return -1;
+            return (int)(fb_get_addr() + offset);
+        }
+    }
     void *ptr = kmalloc(length);
     return (int)ptr;
 }
@@ -750,9 +759,13 @@ static int sys_mmap(uint32_t length, uint32_t unused1, uint32_t unused2){
 static int sys_munmap(uint32_t addr, uint32_t unused1, uint32_t unused2){
     (void)unused1;
     (void)unused2;
+    if (fb_is_active() && addr >= fb_get_addr() && addr < fb_get_addr() + fb_get_height() * fb_get_pitch()) {
+        return 0;
+    }
     kfree((void*)addr);
     return 0;
 }
+
 
 static int sys_pipe(uint32_t fds, uint32_t unused1, uint32_t unused2){
     (void)unused1;
@@ -863,8 +876,14 @@ static int sys_kill(uint32_t pid, uint32_t sig, uint32_t unused1){
 
 static int sys_ioctl(uint32_t fd, uint32_t request, uint32_t arg){
     task_t *task = scheduler_current_task();
+    if (task && (int)fd >= 0 && fd < MAX_FDS && task->fds[fd] && task->fds[fd]->node) {
+        if (vfs_is_fb0(task->fds[fd]->node)) {
+            return fb_ioctl(request, arg);
+        }
+    }
     if (!is_console_fd(task, fd)) return -1; // only the console is a tty
     switch (request) {
+
         case CON_TCGETS:
             if (arg == 0 || !syscall_range_valid(arg, sizeof(struct con_termios))) return -1;
             cons_tcget((struct con_termios*)arg);

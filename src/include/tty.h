@@ -1,7 +1,7 @@
-// vga configs
+// console configs (1024x768 with 8x16 font)
 #define video_mem 0xB8000
-#define screen_width 80
-#define screen_height 25
+#define screen_width 128
+#define screen_height 48
 
 // print rows/columns
 extern int char_raw;

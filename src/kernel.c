@@ -9,6 +9,7 @@
 #include "include/initrd.h"
 #include "include/multiboot.h"
 #include "include/sysinfo.h"
+#include "include/fb.h"
 
 static void user_init(void){
     println("[USER_INIT] Starting user_init...", VGA_COLOR_LIGHT_CYAN);
@@ -47,10 +48,12 @@ void respawn_user_shell(void) {
 }
 
 void kernel_main(struct mb_info *info){
-    clear();
     gdt_init();
     idt_init();
     paging_init();
+    fb_init(info);
+    clear();
+
 
     if (info && (info->flags & MB_INFO_MODS)) {
         uint32_t mods_count = info->mods_count;

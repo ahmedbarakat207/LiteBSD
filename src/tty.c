@@ -3,6 +3,7 @@
 #include "include/heap.h"
 #include "include/sched.h"
 #include "include/idt.h"
+#include "include/fb.h"
 
 // print rows/columns
 int char_raw = 0;
@@ -60,31 +61,55 @@ void cons_tcset(const struct con_termios *in){
 void cons_ws_get(struct con_winsize *out){
     out->ws_row = con_ws_row;
     out->ws_col = con_ws_col;
-    out->ws_xpixel = 0;
-    out->ws_ypixel = 0;
+    out->ws_xpixel = fb_is_active() ? (unsigned short)fb_get_width() : 0;
+    out->ws_ypixel = fb_is_active() ? (unsigned short)fb_get_height() : 0;
 }
+
 
 void cons_ws_set(const struct con_winsize *in){
     if (in->ws_row >= 1 && in->ws_row <= 128) con_ws_row = in->ws_row;
     if (in->ws_col >= 1 && in->ws_col <= 256) con_ws_col = in->ws_col;
 }
 
+static char text_grid[screen_height][screen_width];
+static unsigned char color_grid[screen_height][screen_width];
+static char alt_text_grid[screen_height][screen_width];
+static unsigned char alt_color_grid[screen_height][screen_width];
+static int alt_active = 0;
+static int alt_saved_row = 0;
+static int alt_saved_col = 0;
+
 // sliding window scrolling
 void scroll_screen() {
-    char* vga = (char*)video_mem;
+    if (fb_is_active()) {
+        fb_scroll_up(1);
+    } else {
+        char* vga = (char*)video_mem;
+        for (int row = 1; row < screen_height; row++) {
+            for (int col = 0; col < screen_width; col++) {
+                int src_offset = (row * screen_width + col) * 2;
+                int dst_offset = ((row - 1) * screen_width + col) * 2;
+                vga[dst_offset] = vga[src_offset];
+                vga[dst_offset + 1] = vga[src_offset + 1];
+            }
+        }
+        int bottom_row = screen_height - 1;
+        for (int col = 0; col < screen_width; col++) {
+            int offset = (bottom_row * screen_width + col) * 2;
+            vga[offset] = ' ';
+            vga[offset + 1] = VGA_COLOR_BLACK;
+        }
+    }
     for (int row = 1; row < screen_height; row++) {
         for (int col = 0; col < screen_width; col++) {
-            int src_offset = (row * screen_width + col) * 2;
-            int dst_offset = ((row - 1) * screen_width + col) * 2;
-            vga[dst_offset] = vga[src_offset];
-            vga[dst_offset + 1] = vga[src_offset + 1];
+            text_grid[row - 1][col] = text_grid[row][col];
+            color_grid[row - 1][col] = color_grid[row][col];
         }
     }
     int bottom_row = screen_height - 1;
     for (int col = 0; col < screen_width; col++) {
-        int offset = (bottom_row * screen_width + col) * 2;
-        vga[offset] = ' ';
-        vga[offset + 1] = VGA_COLOR_BLACK;
+        text_grid[bottom_row][col] = ' ';
+        color_grid[bottom_row][col] = VGA_COLOR_BLACK;
     }
     char_raw = screen_height - 1;
     char_column = 0;
@@ -98,31 +123,37 @@ static int ansi_standout = 0;
 static int ansi_saved_row = 0;
 static int ansi_saved_col = 0;
 
-// alternate screen for fullscreen programs (vi uses ?1049h/?1049l)
-static char alt_screen[80 * 25 * 2];
-static int alt_active = 0;
-static int alt_saved_row = 0;
-static int alt_saved_col = 0;
-
 static void alt_enter(){
     if (alt_active) return;
-    char* vga = (char*)video_mem;
-    for (int i = 0; i < 80 * 25 * 2; i++) alt_screen[i] = vga[i];
+    for (int r = 0; r < screen_height; r++) {
+        for (int c = 0; c < screen_width; c++) {
+            alt_text_grid[r][c] = text_grid[r][c];
+            alt_color_grid[r][c] = color_grid[r][c];
+        }
+    }
     alt_saved_row = char_raw;
     alt_saved_col = char_column;
     alt_active = 1;
-    for (int i = 0; i < 80 * 25 * 2; i += 2) {
-        vga[i] = ' ';
-        vga[i + 1] = VGA_COLOR_BLACK;
-    }
-    char_raw = 0;
-    char_column = 0;
+    clear();
 }
 
 static void alt_exit(){
     if (!alt_active) return;
-    char* vga = (char*)video_mem;
-    for (int i = 0; i < 80 * 25 * 2; i++) vga[i] = alt_screen[i];
+    clear();
+    for (int r = 0; r < screen_height; r++) {
+        for (int c = 0; c < screen_width; c++) {
+            text_grid[r][c] = alt_text_grid[r][c];
+            color_grid[r][c] = alt_color_grid[r][c];
+            if (fb_is_active()) {
+                fb_draw_char((unsigned char)text_grid[r][c], c, r, color_grid[r][c]);
+            } else {
+                char* vga = (char*)video_mem;
+                int offset = (r * screen_width + c) * 2;
+                vga[offset] = text_grid[r][c];
+                vga[offset + 1] = color_grid[r][c];
+            }
+        }
+    }
     char_raw = alt_saved_row;
     char_column = alt_saved_col;
     alt_active = 0;
@@ -134,15 +165,22 @@ static void vga_fill(int row0, int col0, int row1, int col1, char attr){
     if (col0 < 0) col0 = 0;
     if (row1 > screen_height) row1 = screen_height;
     if (col1 > screen_width) col1 = screen_width;
-    char* vga = (char*)video_mem;
     for (int row = row0; row < row1; row++) {
         for (int col = col0; col < col1; col++) {
-            int offset = (row * screen_width + col) * 2;
-            vga[offset] = ' ';
-            vga[offset + 1] = attr;
+            text_grid[row][col] = ' ';
+            color_grid[row][col] = (unsigned char)attr;
+            if (fb_is_active()) {
+                fb_draw_char(' ', col, row, (uint8_t)attr);
+            } else {
+                char* vga = (char*)video_mem;
+                int offset = (row * screen_width + col) * 2;
+                vga[offset] = ' ';
+                vga[offset + 1] = attr;
+            }
         }
     }
 }
+
 
 static int ansi_param(int idx, int def){
     if (idx < 0 || idx > ansi_nparams) return def;
@@ -305,10 +343,17 @@ void print_char(char c, char color) {
         return;
     }
     // rest
-    char* vga = (char*)video_mem;
-    int offset = ((char_raw * screen_width) + char_column) * 2;
-    vga[offset] = c;
-    vga[offset + 1] = ansi_standout ? 0xF0 : color;
+    uint8_t final_color = ansi_standout ? 0xF0 : (uint8_t)color;
+    text_grid[char_raw][char_column] = c;
+    color_grid[char_raw][char_column] = final_color;
+    if (fb_is_active()) {
+        fb_draw_char((unsigned char)c, char_column, char_raw, final_color);
+    } else {
+        char* vga = (char*)video_mem;
+        int offset = ((char_raw * screen_width) + char_column) * 2;
+        vga[offset] = c;
+        vga[offset + 1] = final_color;
+    }
     char_column++;
 
     if (char_column >= screen_width) {
@@ -374,15 +419,26 @@ void disable_cursor(void){
 }
 
 void clear(){
-    char* vga = (char*)video_mem;
-    for(int i = 0; i < screen_width * screen_height * 2; i += 2){
-        vga[i] = ' ';
-        vga[i + 1] = VGA_COLOR_BLACK;
+    if (fb_is_active()) {
+        fb_clear(0x00000000);
+    } else {
+        char* vga = (char*)video_mem;
+        for(int i = 0; i < screen_width * screen_height * 2; i += 2){
+            vga[i] = ' ';
+            vga[i + 1] = VGA_COLOR_BLACK;
+        }
+    }
+    for (int r = 0; r < screen_height; r++) {
+        for (int c = 0; c < screen_width; c++) {
+            text_grid[r][c] = ' ';
+            color_grid[r][c] = VGA_COLOR_BLACK;
+        }
     }
     char_raw = 0;
     char_column = 0;
     disable_cursor();
 }
+
 
 static int strings_equal(const char *left, const char *right){
     while(*left && *left == *right){

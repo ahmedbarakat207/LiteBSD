@@ -1,8 +1,13 @@
 section .multiboot
 align 4
-    dd 0x1BADB002
-    dd 0x00 ; x86 arch
-    dd -(0x1BADB002)
+    dd 0x1BADB002                 ; magic
+    dd 0x00000007                 ; flags: align modules (1) + mem info (2) + video mode (4)
+    dd -(0x1BADB002 + 0x00000007) ; checksum
+    dd 0, 0, 0, 0, 0              ; header_addr, load_addr, etc. (dummy padding for ELF to offset 32)
+    dd 0                          ; mode_type (0 = linear graphics)
+    dd 1024                       ; width
+    dd 768                        ; height
+    dd 32                         ; depth
 
 section .text
 global start
