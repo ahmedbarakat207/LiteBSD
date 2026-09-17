@@ -20,7 +20,7 @@ LDFLAGS := -m elf_i386 -T linker.ld
 UCFLAGS  := -std=gnu11 -O2 -Wall -Wextra -m32 -fno-pie -fno-stack-protector \
 	-I libc/include
 ULDFLAGS := -m elf_i386 --gc-sections -Ttext=0x8000000
-PROGS    := $(BUILD_DIR)/top $(BUILD_DIR)/memstat $(BUILD_DIR)/pcinfo $(BUILD_DIR)/fbtest
+PROGS    := $(BUILD_DIR)/top $(BUILD_DIR)/memstat $(BUILD_DIR)/pcinfo $(BUILD_DIR)/fbtest $(BUILD_DIR)/neofetch
 
 .PHONY: all clean iso run-iso syslinux libc busybox initrd run programs
 
@@ -81,6 +81,12 @@ $(BUILD_DIR)/fbtest.o: src/programs/fbtest.c | $(BUILD_DIR)
 $(BUILD_DIR)/fbtest: $(BUILD_DIR)/fbtest.o
 	$(LD) $(ULDFLAGS) libc/build/crt0.o $< libc/build/libc.a -o $@
 
+$(BUILD_DIR)/neofetch.o: src/programs/neofetch.c | $(BUILD_DIR)
+	$(CC) $(UCFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/neofetch: $(BUILD_DIR)/neofetch.o
+	$(LD) $(ULDFLAGS) libc/build/crt0.o $< libc/build/libc.a -o $@
+
 initrd: busybox programs | $(BUILD_DIR)
 	rm -rf $(BUILD_DIR)/initrd
 	mkdir -p $(BUILD_DIR)/initrd/bin $(BUILD_DIR)/initrd/sbin $(BUILD_DIR)/initrd/etc
@@ -95,11 +101,12 @@ initrd: busybox programs | $(BUILD_DIR)
 		ln $(BUILD_DIR)/initrd/bin/busybox $(BUILD_DIR)/initrd/usr/bin/$$applet 2>/dev/null || true; \
 	done
 	ln $(BUILD_DIR)/initrd/bin/busybox $(BUILD_DIR)/initrd/sbin/busybox 2>/dev/null || true
-	# native programs: top, memstat, pcinfo, fbtest
-	cp $(BUILD_DIR)/top     $(BUILD_DIR)/initrd/bin/top
-	cp $(BUILD_DIR)/memstat $(BUILD_DIR)/initrd/bin/memstat
-	cp $(BUILD_DIR)/pcinfo  $(BUILD_DIR)/initrd/bin/pcinfo
-	cp $(BUILD_DIR)/fbtest  $(BUILD_DIR)/initrd/bin/fbtest
+	# native programs: top, memstat, pcinfo, fbtest, neofetch
+	cp $(BUILD_DIR)/top      $(BUILD_DIR)/initrd/bin/top
+	cp $(BUILD_DIR)/memstat  $(BUILD_DIR)/initrd/bin/memstat
+	cp $(BUILD_DIR)/pcinfo   $(BUILD_DIR)/initrd/bin/pcinfo
+	cp $(BUILD_DIR)/fbtest   $(BUILD_DIR)/initrd/bin/fbtest
+	cp $(BUILD_DIR)/neofetch $(BUILD_DIR)/initrd/bin/neofetch
 	echo "root:x:0:0:root:/root:/bin/sh" > $(BUILD_DIR)/initrd/etc/passwd
 	echo "daemon:x:1:1:daemon:/usr/sbin:/bin/sh" >> $(BUILD_DIR)/initrd/etc/passwd
 	echo "nobody:x:65534:65534:nobody:/nonexistent:/bin/false" >> $(BUILD_DIR)/initrd/etc/passwd

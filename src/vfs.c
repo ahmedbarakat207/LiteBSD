@@ -1394,4 +1394,9 @@ int vfs_is_fb0(struct vfs_node *node) {
     return strings_equal(node->path, "/dev/fb0");
 }
 
+int vfs_is_tty(struct vfs_node *node) {
+    if (!node) return 0;
+    return strings_equal(node->path, "/dev/tty") || strings_equal(node->path, "/dev/console");
+}
+
 

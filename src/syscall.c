@@ -174,7 +174,9 @@ static int sys_write(uint32_t fd, uint32_t buffer, uint32_t count){
 static int is_console_fd(task_t *task, uint32_t fd){
     if (!task || (int)fd < 0 || fd >= MAX_FDS || !task->fds[fd]) return 0;
     struct file *f = task->fds[fd];
-    return f->node == NULL && f->pipe == NULL;
+    if (f->pipe != NULL) return 0;
+    if (f->node == NULL) return 1;
+    return vfs_is_tty(f->node);
 }
 
 static int sys_read(uint32_t fd, uint32_t buffer, uint32_t count){
@@ -202,17 +204,76 @@ static int sys_read(uint32_t fd, uint32_t buffer, uint32_t count){
         uint32_t i = 0;
         while (i < count - 1) {
             char c = getchar();
-            if (c == '\n') {
+            if (c == '\n' || c == '\r') {
                 buf[i++] = '\n';
                 if (echo) print_char('\n', VGA_COLOR_WHITE);
                 break;
-            } else if (c == '\b') {
+            } else if (c == 4) { // ^D (EOF)
+                if (i == 0) return 0;
+                break;
+            } else if (c == 3) { // ^C (interrupt / cancel line)
+                if (echo) {
+                    print_char('^', VGA_COLOR_WHITE);
+                    print_char('C', VGA_COLOR_WHITE);
+                    print_char('\n', VGA_COLOR_WHITE);
+                }
+                i = 0;
+                buf[0] = '\0';
+                return 0;
+            } else if (c == '\b' || c == 127) { // Backspace
                 if (i > 0) {
                     i--;
                     if (echo) {
                         print_char('\b', VGA_COLOR_WHITE);
                         print_char(' ', VGA_COLOR_WHITE);
                         print_char('\b', VGA_COLOR_WHITE);
+                    }
+                }
+                continue;
+            } else if (c == 21) { // ^U (erase whole line)
+                while (i > 0) {
+                    i--;
+                    if (echo) {
+                        print_char('\b', VGA_COLOR_WHITE);
+                        print_char(' ', VGA_COLOR_WHITE);
+                        print_char('\b', VGA_COLOR_WHITE);
+                    }
+                }
+                continue;
+            } else if (c == 23) { // ^W (erase word backward)
+                while (i > 0 && buf[i-1] == ' ') {
+                    i--;
+                    if (echo) {
+                        print_char('\b', VGA_COLOR_WHITE);
+                        print_char(' ', VGA_COLOR_WHITE);
+                        print_char('\b', VGA_COLOR_WHITE);
+                    }
+                }
+                while (i > 0 && buf[i-1] != ' ') {
+                    i--;
+                    if (echo) {
+                        print_char('\b', VGA_COLOR_WHITE);
+                        print_char(' ', VGA_COLOR_WHITE);
+                        print_char('\b', VGA_COLOR_WHITE);
+                    }
+                }
+                continue;
+            } else if (c == 12) { // ^L (clear screen)
+                clear();
+                if (echo) {
+                    for (uint32_t k = 0; k < i; k++) {
+                        print_char(buf[k], VGA_COLOR_WHITE);
+                    }
+                }
+                continue;
+            } else if (c == 27) { // ESC: consume escape sequences if typed in cooked mode
+                if (keyboard_available() > 0) {
+                    int next = keyboard_trygetc();
+                    if (next == '[' || next == 'O') {
+                        while (keyboard_available() > 0) {
+                            int seq = keyboard_trygetc();
+                            if ((seq >= 'A' && seq <= 'Z') || (seq >= 'a' && seq <= 'z') || seq == '~') break;
+                        }
                     }
                 }
                 continue;
@@ -347,8 +408,8 @@ static void exec_free_vec(char **kbufs, uint32_t count){
 }
 
 static int sys_execve_impl(struct interrupt_frame *frame, uint32_t path, uint32_t argv_u, uint32_t envp_u) {
-    print("[EXECVE] Executing: ", VGA_COLOR_LIGHT_GREEN);
-    println((const char*)path, VGA_COLOR_LIGHT_GREEN);
+    //print("[EXECVE] Executing: ", VGA_COLOR_LIGHT_GREEN);
+    //println((const char*)path, VGA_COLOR_LIGHT_GREEN);
 
     // snapshot args first: they may point into the image/stack we are about to replace
     char *arg_bufs[EXEC_MAX_ARGS];
@@ -391,7 +452,6 @@ static int sys_execve_impl(struct interrupt_frame *frame, uint32_t path, uint32_
         if (node) { vfs_close(node); node = NULL; }
         node = vfs_open(exec_path, 0);
         if (!node) {
-            println("[EXECVE] vfs_open failed!", VGA_COLOR_RED);
             exec_free_vec(arg_bufs, argc);
             exec_free_vec(env_bufs, envc);
             return -1;
@@ -507,7 +567,6 @@ static int sys_execve_impl(struct interrupt_frame *frame, uint32_t path, uint32_
         return -1;
     }
     if (!node) {
-        println("[EXECVE] vfs_open failed!", VGA_COLOR_RED);
         exec_free_vec(arg_bufs, argc);
         exec_free_vec(env_bufs, envc);
         return -1;
@@ -866,12 +925,10 @@ static int sys_kill(uint32_t pid, uint32_t sig, uint32_t unused1){
     if (!target) {
         return -1;
     }
-    if (sig == 9) {
-        target->state = TASK_ZOMBIE;
-        target->exit_code = 128 + 9;
-        return 0;
-    }
-    return -1;
+    if (sig == 0) return 0;
+    target->state = TASK_ZOMBIE;
+    target->exit_code = 128 + sig;
+    return 0;
 }
 
 static int sys_ioctl(uint32_t fd, uint32_t request, uint32_t arg){

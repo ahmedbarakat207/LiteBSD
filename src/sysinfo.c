@@ -245,18 +245,31 @@ int proc_gen_file(int slot, char *buf, unsigned int cap){
     case PROC_MEMINFO: {
         unsigned int total = kern_mem_total_kb();
         unsigned int free = kern_mem_free_kb();
+        unsigned int heap_kb = heap_used_bytes() / 1024;
+        unsigned int cached_kb = initrd_bytes / 1024;
+        unsigned int used = total >= free ? total - free : 0;
+        unsigned int active_kb = used >= (heap_kb + cached_kb) ? used - heap_kb - cached_kb : 0;
         ob_puts(&o, "MemTotal:       ");
         ob_putu(&o, total);
         ob_puts(&o, " kB\nMemFree:        ");
         ob_putu(&o, free);
         ob_puts(&o, " kB\nMemAvailable:   ");
-        ob_putu(&o, free);
-        ob_puts(&o, " kB\nBuffers:        0 kB\nCached:          0 kB\n"
-                    "Shmem:            0 kB\nSReclaimable:    0 kB\n"
-                    "SwapTotal:        0 kB\nSwapFree:         0 kB\n"
-                    "Dirty:            0 kB\nWriteback:        0 kB\n"
-                    "AnonPages:        0 kB\nMapped:           0 kB\n"
-                    "Slab:             0 kB\n");
+        ob_putu(&o, free + cached_kb);
+        ob_puts(&o, " kB\nBuffers:            0 kB\nCached:         ");
+        ob_putu(&o, cached_kb);
+        ob_puts(&o, " kB\nActive:         ");
+        ob_putu(&o, active_kb);
+        ob_puts(&o, " kB\nInactive:           0 kB\n"
+                    "Shmem:              0 kB\n"
+                    "Slab:           ");
+        ob_putu(&o, heap_kb);
+        ob_puts(&o, " kB\nSReclaimable:       0 kB\n"
+                    "SwapTotal:          0 kB\nSwapFree:           0 kB\n"
+                    "Dirty:              0 kB\nWriteback:          0 kB\n"
+                    "AnonPages:      ");
+        ob_putu(&o, active_kb);
+        ob_puts(&o, " kB\nMapped:          3072 kB\n"
+                    "PageTables:       256 kB\n");
         break;
     }
     case PROC_CPUINFO:

@@ -48,9 +48,14 @@ void err(const char* msg);
 // console termios: layout mirrors libc struct termios (same order/sizes,
 // Linux-compatible flag values) so field copies are ABI-safe.
 #define CON_NCCS 32
+#define CON_VINTR 0
+#define CON_VQUIT 1
+#define CON_VERASE 2
+#define CON_VKILL 3
 #define CON_VEOF 4
 #define CON_VTIME 5
 #define CON_VMIN 6
+#define CON_VSUSP 10
 
 #define CON_ISIG 0000001
 #define CON_ICANON 0000002

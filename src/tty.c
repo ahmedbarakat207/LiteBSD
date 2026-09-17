@@ -17,7 +17,16 @@ static unsigned int con_oflag = 0;
 static unsigned int con_cflag = 0;
 static unsigned int con_lflag = CON_ICANON | CON_ECHO | CON_ISIG | CON_IEXTEN;
 static unsigned char con_line = 0;
-static unsigned char con_cc[CON_NCCS] = { [CON_VMIN] = 1 };
+static unsigned char con_cc[CON_NCCS] = {
+    [CON_VINTR] = 3,    // ^C
+    [CON_VQUIT] = 28,   // ^\ (0x1C)
+    [CON_VERASE] = 127, // DEL / BS
+    [CON_VKILL] = 21,   // ^U (0x15)
+    [CON_VEOF] = 4,     // ^D
+    [CON_VTIME] = 0,
+    [CON_VMIN] = 1,
+    [CON_VSUSP] = 26,   // ^Z (0x1A)
+};
 static unsigned int con_ispeed = 13; // B9600, matches libc default
 static unsigned int con_ospeed = 13;
 static unsigned short con_ws_row = screen_height;
@@ -116,10 +125,13 @@ void scroll_screen() {
 }
 
 static int ansi_state = 0; // 0 normal, 1 got ESC, 2 in CSI
-static int ansi_params[4];
+static int ansi_params[8];
 static int ansi_nparams = 0;
 static int ansi_private = 0; // ? prefix (DEC private modes)
 static int ansi_standout = 0;
+static uint8_t cur_fg = VGA_COLOR_WHITE;
+static uint8_t cur_bg = VGA_COLOR_BLACK;
+static uint8_t cur_bold = 0;
 static int ansi_saved_row = 0;
 static int ansi_saved_col = 0;
 
@@ -237,13 +249,38 @@ static void ansi_csi(char final){
             break;
         case 'm':
             if (ansi_private) break;
-            if (ansi_nparams < 0) {
-                ansi_standout = 0;
-                break;
-            }
             for (int i = 0; i <= ansi_nparams; i++) {
-                if (ansi_params[i] == 7) ansi_standout = 1;
-                else if (ansi_params[i] == 0) ansi_standout = 0;
+                int p = ansi_params[i];
+                if (p == 0) {
+                    cur_fg = VGA_COLOR_WHITE;
+                    cur_bg = VGA_COLOR_BLACK;
+                    cur_bold = 0;
+                    ansi_standout = 0;
+                } else if (p == 1) {
+                    cur_bold = 8;
+                } else if (p == 22) {
+                    cur_bold = 0;
+                } else if (p == 7) {
+                    ansi_standout = 1;
+                } else if (p == 27) {
+                    ansi_standout = 0;
+                } else if (p >= 30 && p <= 37) {
+                    static const uint8_t a2v[8] = { 0, 4, 2, 6, 1, 5, 3, 7 };
+                    cur_fg = a2v[p - 30];
+                } else if (p == 39) {
+                    cur_fg = VGA_COLOR_WHITE;
+                } else if (p >= 90 && p <= 97) {
+                    static const uint8_t a2v[8] = { 0, 4, 2, 6, 1, 5, 3, 7 };
+                    cur_fg = a2v[p - 90] | 8;
+                } else if (p >= 40 && p <= 47) {
+                    static const uint8_t a2v[8] = { 0, 4, 2, 6, 1, 5, 3, 7 };
+                    cur_bg = a2v[p - 40];
+                } else if (p == 49) {
+                    cur_bg = VGA_COLOR_BLACK;
+                } else if (p >= 100 && p <= 107) {
+                    static const uint8_t a2v[8] = { 0, 4, 2, 6, 1, 5, 3, 7 };
+                    cur_bg = a2v[p - 100] | 8;
+                }
             }
             break;
         case 's':
@@ -281,10 +318,7 @@ void print_char(char c, char color) {
             ansi_state = 2;
             ansi_nparams = 0;
             ansi_private = 0;
-            ansi_params[0] = 0;
-            ansi_params[1] = 0;
-            ansi_params[2] = 0;
-            ansi_params[3] = 0;
+            for (int i = 0; i < 8; i++) ansi_params[i] = 0;
             return;
         }
         ansi_state = 0;
@@ -300,7 +334,10 @@ void print_char(char c, char color) {
             return;
         }
         if (c == ';') {
-            if (ansi_nparams < 3) ansi_nparams++;
+            if (ansi_nparams < 7) {
+                ansi_nparams++;
+                ansi_params[ansi_nparams] = 0;
+            }
             return;
         }
         ansi_state = 0;
@@ -343,7 +380,12 @@ void print_char(char c, char color) {
         return;
     }
     // rest
-    uint8_t final_color = ansi_standout ? 0xF0 : (uint8_t)color;
+    uint8_t fg = cur_bold ? (cur_fg | 8) : cur_fg;
+    uint8_t bg = cur_bg;
+    uint8_t final_color = ansi_standout ? ((bg & 0x0F) | ((fg & 0x0F) << 4)) : ((fg & 0x0F) | ((bg & 0x0F) << 4));
+    if (color != VGA_COLOR_WHITE && cur_fg == VGA_COLOR_WHITE && cur_bg == VGA_COLOR_BLACK && !cur_bold) {
+        final_color = (uint8_t)color;
+    }
     text_grid[char_raw][char_column] = c;
     color_grid[char_raw][char_column] = final_color;
     if (fb_is_active()) {
@@ -436,6 +478,10 @@ void clear(){
     }
     char_raw = 0;
     char_column = 0;
+    cur_fg = VGA_COLOR_WHITE;
+    cur_bg = VGA_COLOR_BLACK;
+    cur_bold = 0;
+    ansi_standout = 0;
     disable_cursor();
 }
 

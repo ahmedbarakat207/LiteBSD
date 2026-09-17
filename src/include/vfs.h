@@ -67,6 +67,7 @@ struct vfs_node *vfs_find_node(const char *path);
 int vfs_getdents(const char *path, void *buf, unsigned int bufsize);
 int vfs_getdents_by_node(struct vfs_node *node, void *buf, unsigned int bufsize);
 int vfs_is_fb0(struct vfs_node *node);
+int vfs_is_tty(struct vfs_node *node);
 
 #endif /* VFS_H */
 
