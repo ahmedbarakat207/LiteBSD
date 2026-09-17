@@ -4,6 +4,8 @@ A 32-bit x86 hobby OS that boots to a real BusyBox shell. Multiboot kernel, pree
 
 No, it's not BSD. The name is aspirational.
 
+![LiteBSD Screenshot](screenshot.png)
+
 ## Boot it
 
 You need `i686-elf-gcc`, `nasm`, `qemu-system-i386`, and `xorriso` for the ISO target. Syslinux 6.03 binaries are fetched automatically on first `make iso` (no install needed), or reused from `/usr/lib/ISOLINUX` + `/usr/lib/syslinux` if already present. Then:
