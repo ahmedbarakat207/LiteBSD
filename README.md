@@ -17,36 +17,6 @@ That builds the kernel, rebuilds libc + busybox if needed, compiles the native t
 
 Other targets: `make libc`, `make busybox`, `make initrd`, `make iso`, `make clean`. `make all` builds kernel + libc + busybox + native tools + initrd.
 
-## Layout
-
-```
-src/boot.asm        multiboot header, entry, GDT flush, all 256 ISR stubs
-src/kernel.c        kernel_main + user_init (execs /bin/sh) + shell respawn
-src/gdt.c           6-entry GDT + TSS
-src/idt.c           IDT, PIC remap, fault handler, COM1 logging
-src/paging.c        4 GB flat mapping, PSE
-src/heap.c          kernel bump allocator + free list (kmalloc/kfree)
-src/sched.c         round-robin tasks, fork, wait4, exit
-src/syscall.c       int 0x80 dispatch + ~39 syscalls + ELF loader
-src/vfs.c           path resolution + node list + getdents + synth tree (/proc, /sys, /dev)
-src/sysinfo.c       CPUID, DMI / SMBIOS reader, /proc and /sys synthesizers
-src/initrd.c        ustar parser that populates the VFS at boot
-src/keyboard.c      PS/2 scancode → ANSI sequences, arrows, macros, 256-byte ring buffer
-src/fb.c            VESA VBE 1024x768x32bpp linear framebuffer driver
-src/tty.c           framebuffer console + ANSI engine (16/256/24-bit color, altscreen)
-src/time.c          PIT @100Hz
-src/programs/top.c       full interactive Linux top (procps-ng layout, sort, kill, raw mode)
-src/programs/memstat.c   dual-engine BSD / Linux memory statistics (UMA, /proc/meminfo, gauges)
-src/programs/neofetch.c  system info + FreeBSD Beastie ASCII art
-src/programs/pcinfo.c    hardware & BIOS / DMI inspector
-src/programs/fbtest.c    framebuffer visual demo via /dev/fb0
-linker.ld           kernel linked at 1M, ENTRY(start)
-isolinux.cfg        ISOLINUX + mboot.c32: kernel as multiboot, initrd.tar as module
-libc/               c-lite submodule: crt0, syscalls, malloc, stdio, dirent, float...
-busybox/            upstream busybox submodule + busybox.patch
-busybox.config      the actual busybox config (hush, vi, top, lineedit, ~26 applets, static)
-```
-
 ## Boot sequence
 
 1. ISOLINUX (`isolinux.bin` + `mboot.c32`, built into the ISO by `make iso` via `xorriso`) loads the kernel at 1M (`linker.ld`: `. = 1M`) and passes the multiboot info pointer in `ebx`. `boot.asm:start` does `cli`, sets `esp` to an 8K stack, installs the flat GDT, pushes `ebx`, calls `kernel_main`.
@@ -210,28 +180,6 @@ Every node carries `atime/mtime/ctime` (sec + nsec, `stat` reads them back). The
 - **c-lite** (`libc/` submodule): `crt0.asm`, raw `int $0x80` wrappers, `malloc` over `brk`, stdio, string, `dirent` speaking the custom getdents layout, `%f` floating-point formatting in `vsnprintf`, `div`/`ldiv`/`atof`, `mmap` with file descriptor passing, plus compat shims. Native binaries and BusyBox link against it statically (`-nostdlib`, `-Ttext,0x8000000`).
 - **BusyBox 1.36.1** with an expanded config: `hush` (`SH_IS_HUSH`, `BASH_IS_HUSH`, standalone + nofork), line editing (`FEATURE_EDITING`, `TAB_COMPLETION`, `DO_HISTORY`), `vi` (minimal: colon commands on, no search/yank/signals/resize; altscreen support), `top`, and applets `cat echo ls mkdir pwd clear kill sleep test true false printf bash vi uname cp mv rm rmdir ln touch readlink realpath truncate stat free ps uptime hostname fbset`. Shell globbing (`*?[]`, dotfile rules, `dir/*`) is a real libc `glob()` over `opendir`/`readdir`/`fnmatch`.
 
-## Debugging
-
-Faults print one line to VGA/framebuffer *and* a detailed line to COM1 (`0x3F8`, 38400 8N1):
-
-```
-[SERIAL] CPU Exception 6 pid=1 err=0x00000000 eip=0x00000007 cs=0x0000001b
-  ebp=... esp=... useresp=... ustack: 8 words ... ubase=... utop=...
-  heap=start-brk-end [cr2=... on #PF]
-```
-
-Run QEMU with `-serial file:serial.log` (or `-serial stdio`) and drive it headless via the monitor (`-monitor stdio`, `sendkey`, `screendump`). That's how the fork-corruption bugs got caught — `eip=0x7` with `ebp` sitting in the heap is unmistakable once you see the register dump next to the heap range.
-
-## Honest limitations
-
-- No memory isolation at all. Every task shares USER code/data/bss and the kernel heap. `fork` without an MMU can't give the kid private globals at the same virtual addresses, so hush's fork path (which assumes copy semantics) pollutes shared state. The vfork discipline + fault containment keeps the box alive, but a failed exec still kills that shell instance and respawns a fresh one — you'll lose `cwd`.
-- `exec` forwards `argv`/`envp`, but fork+exec of an external binary still shares USER text/data/bss with the blocked parent, so commands like `sleep` can fault the shell and trigger a respawn (NOFORK applets, including `vi`, are unaffected). Pipes/dup work at the fd level; job control doesn't exist.
-- Exiting the init shell (`exit`, or quitting `vi` and tripping hush's fd-restore grumble — `can't duplicate file descriptor`, file is saved first) respawns a fresh shell instead of faulting: `sys_exit` on a `ppid == 0` task brings up `user_init` again, same as the fault path. You'll lose `cwd`.
-- `wait4`'s `-2`/rewind and the `eip -= 2` assume the syscall instruction — true today, fragile forever.
-- `kmalloc` has no locking; it survives because syscalls run with IF clear, but it's one `sti` in the wrong place away from corruption.
-- The user heap is a fixed 1M window per task and `wait4` never frees shared heaps — long sessions leak.
-
-Roadmap, roughly: per-process address spaces (then real fork and deleting half the hacks above), a disk driver so VFS outlives boot, signals past SIGKILL, and growing the applet set (argv forwarding is done; private per-process globals are the next blocker for external commands).
 
 MIT, (c) 2026 Ahmed Barakat.
 
