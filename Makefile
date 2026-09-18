@@ -20,7 +20,7 @@ LDFLAGS := -m elf_i386 -T linker.ld
 UCFLAGS  := -std=gnu11 -O2 -Wall -Wextra -m32 -fno-pie -fno-stack-protector \
 	-I libc/include
 ULDFLAGS := -m elf_i386 --gc-sections -Ttext=0x8000000
-PROGS    := $(BUILD_DIR)/memstat $(BUILD_DIR)/pcinfo $(BUILD_DIR)/fbtest
+PROGS    := $(BUILD_DIR)/memstat $(BUILD_DIR)/pcinfo $(BUILD_DIR)/fbtest $(BUILD_DIR)/forktest
 
 .PHONY: all clean iso run-iso syslinux libc busybox initrd run programs ifconfig curl
 
@@ -63,16 +63,22 @@ $(BUILD_DIR)/memstat.o: src/programs/memstat.c | $(BUILD_DIR)
 $(BUILD_DIR)/pcinfo.o: src/programs/pcinfo.c | $(BUILD_DIR)
 	$(CC) $(UCFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/memstat: $(BUILD_DIR)/memstat.o
+$(BUILD_DIR)/memstat: $(BUILD_DIR)/memstat.o libc/build/libc.a
 	$(LD) $(ULDFLAGS) libc/build/crt0.o $< libc/build/libc.a -o $@
 
-$(BUILD_DIR)/pcinfo: $(BUILD_DIR)/pcinfo.o
+$(BUILD_DIR)/pcinfo: $(BUILD_DIR)/pcinfo.o libc/build/libc.a
 	$(LD) $(ULDFLAGS) libc/build/crt0.o $< libc/build/libc.a -o $@
 
 $(BUILD_DIR)/fbtest.o: src/programs/fbtest.c | $(BUILD_DIR)
 	$(CC) $(UCFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/fbtest: $(BUILD_DIR)/fbtest.o
+$(BUILD_DIR)/fbtest: $(BUILD_DIR)/fbtest.o libc/build/libc.a
+	$(LD) $(ULDFLAGS) libc/build/crt0.o $< libc/build/libc.a -o $@
+
+$(BUILD_DIR)/forktest.o: src/programs/forktest.c | $(BUILD_DIR)
+	$(CC) $(UCFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/forktest: $(BUILD_DIR)/forktest.o libc/build/libc.a
 	$(LD) $(ULDFLAGS) libc/build/crt0.o $< libc/build/libc.a -o $@
 
 ifconfig: $(BUILD_DIR)/ifconfig
@@ -163,6 +169,7 @@ initrd: busybox programs $(BUILD_DIR)/ifconfig $(BUILD_DIR)/curl | $(BUILD_DIR)
 	ln $(BUILD_DIR)/initrd/bin/busybox $(BUILD_DIR)/initrd/sbin/busybox 2>/dev/null || true
 	# authentic programs: memstat, pcinfo, fbtest, ifconfig (net-tools), curl (curl/curl), neofetch
 	cp $(BUILD_DIR)/memstat  $(BUILD_DIR)/initrd/bin/memstat
+	cp $(BUILD_DIR)/forktest $(BUILD_DIR)/initrd/bin/forktest
 	cp $(BUILD_DIR)/pcinfo   $(BUILD_DIR)/initrd/bin/pcinfo
 	cp $(BUILD_DIR)/fbtest   $(BUILD_DIR)/initrd/bin/fbtest
 	cp $(BUILD_DIR)/ifconfig $(BUILD_DIR)/initrd/bin/ifconfig

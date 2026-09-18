@@ -274,16 +274,17 @@ struct interrupt_frame *schedule(struct interrupt_frame *frame){
 
     current_task->frame = frame;
 
+    // Never resume a zombie: task_exit() already restored the parent snapshot
+    // over the shared user image, so a dead task's eip/useresp point at
+    // garbage. Pick the next RUNNING task; only stay on current if it is
+    // still RUNNING and nothing else is runnable.
     task_t *next = current_task->next;
-    // skip corpses and napping dads
-    // if everyone else is dead/asleep just keep running current lol
     task_t *start = next;
-    while ((next->state == TASK_ZOMBIE || next->state == TASK_BLOCKED) && next != current_task) {
+    do {
+        if (next->state == TASK_RUNNING) break;
         next = next->next;
-        if (next == start) break;
-    }
-    // picked a corpse but current is fine? stay on current then
-    if ((next->state == TASK_ZOMBIE || next->state == TASK_BLOCKED) && current_task->state == TASK_RUNNING) {
+    } while (next != start);
+    if (next->state != TASK_RUNNING && current_task->state == TASK_RUNNING) {
         next = current_task;
     }
     current_task = next;
@@ -545,7 +546,13 @@ int wait4(int pid, int *status, int options){
             return -1;
         }
         if (found){
-            if (status) *status = found->exit_code;
+            // Linux/BSD wait status: exit code goes in bits 15..8 so that
+            // WIFEXITED/WEXITSTATUS decode it. A raw code misdecodes as a
+            // signal death (e.g. 127 looks like "killed by sig 127"), which
+            // breaks $? and shells' job handling.
+            // Signal kills already carry the 128+sig shell convention, which
+            // then surfaces as that same familiar value via WEXITSTATUS.
+            if (status) *status = (found->exit_code & 0xff) << 8;
             int child_pid = (int)found->pid;
             remove_task(found);
             if (found->img_snapshot) {
@@ -566,6 +573,9 @@ int wait4(int pid, int *status, int options){
     }
 }
 
+// Marks current dead and restores the parent snapshot over the shared user
+// image. Callers must schedule away immediately: this frame's eip/useresp
+// now point at the parent's code, so iret'ing into the zombie runs garbage.
 void task_exit(int status){
     if (!current_task) return;
     current_task->state = TASK_ZOMBIE;

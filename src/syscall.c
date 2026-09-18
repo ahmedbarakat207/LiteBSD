@@ -959,6 +959,13 @@ static int sys_kill(uint32_t pid, uint32_t sig, uint32_t unused1){
         return -1;
     }
     if (sig == 0) return 0;
+    // killing ourselves must run the full exit path (restore the parent
+    // snapshot, wake the blocked parent, drop fds) so the parent resumes on
+    // its own code; syscall_handler then schedules away from the zombie.
+    if (target == scheduler_current_task()) {
+        task_exit(128 + sig);
+        return 0;
+    }
     target->state = TASK_ZOMBIE;
     target->exit_code = 128 + sig;
     return 0;
@@ -1595,6 +1602,17 @@ struct interrupt_frame *syscall_handler(struct interrupt_frame *frame){
 
     if (syscall_num < SYSCALL_COUNT && syscall_table[syscall_num]) {
         int ret = syscall_table[syscall_num](arg1, arg2, arg3, arg4, arg5, arg6);
+        // Exiting leaves current as TASK_ZOMBIE and task_exit() already
+        // restored the parent snapshot over the shared user image, so this
+        // frame's eip/useresp point at garbage. Never iret into it: switch
+        // away immediately, before touching the dead frame.
+        {
+            task_t *cur = scheduler_current_task();
+            if (cur && cur->state == TASK_ZOMBIE) {
+                frame = schedule(frame);
+                return frame;
+            }
+        }
         if (syscall_num == 7 && ret == -2) {
             frame->eax = syscall_num;
             frame->eip -= 2;
@@ -1612,6 +1630,8 @@ struct interrupt_frame *syscall_handler(struct interrupt_frame *frame){
         frame->eax = -1;
     }
 
+    // safety net: any path that left current a zombie (e.g. killed by its
+    // own kill syscall) must never be iret'd into; see above.
     task_t *task = scheduler_current_task();
     if (task && task->state == TASK_ZOMBIE) {
         frame = schedule(frame);
