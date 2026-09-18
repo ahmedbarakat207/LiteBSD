@@ -40,6 +40,18 @@
 #define LINK 37
 #define FUTIMENS 38
 #define UTIMENS 39
+#define SYS_SOCKET 40
+#define SYS_BIND 41
+#define SYS_CONNECT 42
+#define SYS_LISTEN 43
+#define SYS_ACCEPT 44
+#define SYS_SENDTO 45
+#define SYS_RECVFROM 46
+#define SYS_SHUTDOWN 47
+#define SYS_GETSOCKOPT 48
+#define SYS_SETSOCKOPT 49
+#define SYS_GETSOCKNAME 50
+#define SYS_GETPEERNAME 51
 
 #define USER_LOAD_ADDR 0x8000000   
 

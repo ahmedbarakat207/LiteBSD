@@ -1,4 +1,4 @@
-#include "include/keyboard.h"
+#include "drivers/include/keyboard.h"
 #include "include/tty.h"
 
 char key_buffer[256];

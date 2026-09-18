@@ -1,12 +1,15 @@
 #include "include/syscall.h"
 #include "include/tty.h"
-#include "include/keyboard.h"
+#include "drivers/include/keyboard.h"
 #include "include/sched.h"
 #include "include/idt.h"
 #include "include/heap.h"
 #include "include/vfs.h"
 #include "include/time.h"
-#include "include/fb.h"
+#include "drivers/include/fb.h"
+#include "include/socket.h"
+#include "include/netstack.h"
+#include "drivers/include/netdev.h"
 #include <stdint.h>
 
 
@@ -51,6 +54,18 @@ static int sys_access(uint32_t path, uint32_t mode, uint32_t unused1);
 static int sys_link(uint32_t oldpath, uint32_t newpath, uint32_t unused1);
 static int sys_futimens(uint32_t fd, uint32_t times, uint32_t unused1);
 static int sys_utimens(uint32_t path, uint32_t times, uint32_t flags);
+static int sys_socket_call(uint32_t domain, uint32_t type, uint32_t protocol, uint32_t a4, uint32_t a5, uint32_t a6);
+static int sys_bind_call(uint32_t fd, uint32_t addr, uint32_t addrlen, uint32_t a4, uint32_t a5, uint32_t a6);
+static int sys_connect_call(uint32_t fd, uint32_t addr, uint32_t addrlen, uint32_t a4, uint32_t a5, uint32_t a6);
+static int sys_listen_call(uint32_t fd, uint32_t backlog, uint32_t a3, uint32_t a4, uint32_t a5, uint32_t a6);
+static int sys_accept_call(uint32_t fd, uint32_t addr, uint32_t addrlen, uint32_t a4, uint32_t a5, uint32_t a6);
+static int sys_sendto_call(uint32_t fd, uint32_t buf, uint32_t len, uint32_t flags, uint32_t dest_addr, uint32_t addrlen);
+static int sys_recvfrom_call(uint32_t fd, uint32_t buf, uint32_t len, uint32_t flags, uint32_t src_addr, uint32_t addrlen);
+static int sys_shutdown_call(uint32_t fd, uint32_t how, uint32_t a3, uint32_t a4, uint32_t a5, uint32_t a6);
+static int sys_getsockopt_call(uint32_t fd, uint32_t level, uint32_t optname, uint32_t optval, uint32_t optlen, uint32_t a6);
+static int sys_setsockopt_call(uint32_t fd, uint32_t level, uint32_t optname, uint32_t optval, uint32_t optlen, uint32_t a6);
+static int sys_getsockname_call(uint32_t fd, uint32_t addr, uint32_t addrlen, uint32_t a4, uint32_t a5, uint32_t a6);
+static int sys_getpeername_call(uint32_t fd, uint32_t addr, uint32_t addrlen, uint32_t a4, uint32_t a5, uint32_t a6);
 
 static int sys_execve_impl(struct interrupt_frame *frame, uint32_t path, uint32_t argv_u, uint32_t envp_u);
 
@@ -60,49 +75,61 @@ static int sys_execve_impl(struct interrupt_frame *frame, uint32_t path, uint32_
 #define EXEC_MAX_TOTAL 8192
 #define EXEC_STACK_SIZE 16384
 
-typedef int (*syscall_func_t)(uint32_t, uint32_t, uint32_t);
+typedef int (*syscall_func_t)();
 
 static const syscall_func_t syscall_table[] = {
-    NULL,                       // 0
-    sys_write,                  // 1
-    sys_read,                   // 2
-    sys_exit,                   // 3
-    sys_getpid,                 // 4
-    sys_fork,                   // 5
-    sys_execve,                 // 6
-    sys_wait4,                  // 7
-    sys_getppid,                // 8
-    sys_brk,                    // 9
-    sys_mmap,                   // 10
-    sys_munmap,                 // 11
-    sys_pipe,                   // 12
-    sys_dup,                    // 13
-    sys_dup2,                   // 14
-    sys_kill,                   // 15
-    sys_ioctl,                  // 16
-    sys_open,                   // 17
-    sys_close,                  // 18
-    sys_lseek,                  // 19
-    sys_stat,                   // 20
-    sys_fstat,                  // 21
-    sys_unlink,                 // 22
-    sys_mkdir,                  // 23
-    sys_chdir,                  // 24
-    sys_getcwd,               // 25
-    sys_getdents,             // 26
-    sys_ftruncate,            // 27
-    sys_poll,                 // 28
-    sys_uname,                // 29
-    sys_rename,               // 30
-    sys_rmdir,                // 31
-    sys_symlink,              // 32
-    sys_readlink,             // 33
-    sys_lstat,                // 34
-    sys_truncate,             // 35
-    sys_access,               // 36
-    sys_link,                 // 37
-    sys_futimens,             // 38
-    sys_utimens,              // 39
+    (syscall_func_t)NULL,                       // 0
+    (syscall_func_t)sys_write,                  // 1
+    (syscall_func_t)sys_read,                   // 2
+    (syscall_func_t)sys_exit,                   // 3
+    (syscall_func_t)sys_getpid,                 // 4
+    (syscall_func_t)sys_fork,                   // 5
+    (syscall_func_t)sys_execve,                 // 6
+    (syscall_func_t)sys_wait4,                  // 7
+    (syscall_func_t)sys_getppid,                // 8
+    (syscall_func_t)sys_brk,                    // 9
+    (syscall_func_t)sys_mmap,                   // 10
+    (syscall_func_t)sys_munmap,                 // 11
+    (syscall_func_t)sys_pipe,                   // 12
+    (syscall_func_t)sys_dup,                    // 13
+    (syscall_func_t)sys_dup2,                   // 14
+    (syscall_func_t)sys_kill,                   // 15
+    (syscall_func_t)sys_ioctl,                  // 16
+    (syscall_func_t)sys_open,                   // 17
+    (syscall_func_t)sys_close,                  // 18
+    (syscall_func_t)sys_lseek,                  // 19
+    (syscall_func_t)sys_stat,                   // 20
+    (syscall_func_t)sys_fstat,                  // 21
+    (syscall_func_t)sys_unlink,                 // 22
+    (syscall_func_t)sys_mkdir,                  // 23
+    (syscall_func_t)sys_chdir,                  // 24
+    (syscall_func_t)sys_getcwd,               // 25
+    (syscall_func_t)sys_getdents,             // 26
+    (syscall_func_t)sys_ftruncate,            // 27
+    (syscall_func_t)sys_poll,                 // 28
+    (syscall_func_t)sys_uname,                // 29
+    (syscall_func_t)sys_rename,               // 30
+    (syscall_func_t)sys_rmdir,                // 31
+    (syscall_func_t)sys_symlink,              // 32
+    (syscall_func_t)sys_readlink,             // 33
+    (syscall_func_t)sys_lstat,                // 34
+    (syscall_func_t)sys_truncate,             // 35
+    (syscall_func_t)sys_access,               // 36
+    (syscall_func_t)sys_link,                 // 37
+    (syscall_func_t)sys_futimens,             // 38
+    (syscall_func_t)sys_utimens,              // 39
+    (syscall_func_t)sys_socket_call,          // 40
+    (syscall_func_t)sys_bind_call,            // 41
+    (syscall_func_t)sys_connect_call,         // 42
+    (syscall_func_t)sys_listen_call,          // 43
+    (syscall_func_t)sys_accept_call,          // 44
+    (syscall_func_t)sys_sendto_call,          // 45
+    (syscall_func_t)sys_recvfrom_call,        // 46
+    (syscall_func_t)sys_shutdown_call,        // 47
+    (syscall_func_t)sys_getsockopt_call,      // 48
+    (syscall_func_t)sys_setsockopt_call,      // 49
+    (syscall_func_t)sys_getsockname_call,     // 50
+    (syscall_func_t)sys_getpeername_call,     // 51
 };
 
 #define SYSCALL_COUNT (sizeof(syscall_table)/sizeof(syscall_table[0]))
@@ -128,7 +155,7 @@ static int syscall_string_valid(uint32_t address){
 static int sys_write(uint32_t fd, uint32_t buffer, uint32_t count){
     if (buffer == 0 || !syscall_range_valid(buffer, count)) return -1;
     task_t *task = scheduler_current_task();
-    if (fd == 1 || fd == 2 || (task && (int)fd >= 0 && fd < MAX_FDS && task->fds[fd] && !task->fds[fd]->node && !task->fds[fd]->pipe)) {
+    if (fd == 1 || fd == 2 || (task && (int)fd >= 0 && fd < MAX_FDS && task->fds[fd] && !task->fds[fd]->node && !task->fds[fd]->pipe && !task->fds[fd]->sock)) {
         const char *buf = (const char *)buffer;
         for (uint32_t i = 0; i < count; i++) {
             print_char(buf[i], VGA_COLOR_WHITE);
@@ -140,6 +167,9 @@ static int sys_write(uint32_t fd, uint32_t buffer, uint32_t count){
         return -1;
     }
     struct file *f = task->fds[fd];
+    if (f->sock) {
+        return sock_sendto(f->sock, (const void *)buffer, count, 0, 0, 0);
+    }
     if (f->pipe) {
         struct pipe *p = f->pipe;
         const char *buf = (const char *)buffer;
@@ -290,6 +320,9 @@ static int sys_read(uint32_t fd, uint32_t buffer, uint32_t count){
         return -1;
     }
     struct file *f = task->fds[fd];
+    if (f->sock) {
+        return sock_recvfrom(f->sock, (void *)buffer, count, 0, 0, 0);
+    }
     if (f->pipe) {
         struct pipe *p = f->pipe;
         char *buf = (char *)buffer;
@@ -931,11 +964,89 @@ static int sys_kill(uint32_t pid, uint32_t sig, uint32_t unused1){
     return 0;
 }
 
+struct sockaddr_in_k {
+    uint16_t sin_family;
+    uint16_t sin_port;
+    uint32_t sin_addr;
+    char     sin_zero[8];
+};
+
+struct ifreq_k {
+    char ifr_name[16];
+    union {
+        struct sockaddr_in_k ifru_addr;
+        struct sockaddr_in_k ifru_dstaddr;
+        struct sockaddr_in_k ifru_broadaddr;
+        struct sockaddr_in_k ifru_netmask;
+        struct {
+            uint16_t sa_family;
+            char sa_data[14];
+        } ifru_hwaddr;
+        short ifru_flags;
+        int ifru_ivalue;
+        int ifru_mtu;
+        char ifru_slave[16];
+        char ifru_newname[16];
+        void *ifru_data;
+    } ifr_ifru;
+};
+
 static int sys_ioctl(uint32_t fd, uint32_t request, uint32_t arg){
     task_t *task = scheduler_current_task();
-    if (task && (int)fd >= 0 && fd < MAX_FDS && task->fds[fd] && task->fds[fd]->node) {
-        if (vfs_is_fb0(task->fds[fd]->node)) {
+    if (task && (int)fd >= 0 && fd < MAX_FDS && task->fds[fd]) {
+        if (task->fds[fd]->node && vfs_is_fb0(task->fds[fd]->node)) {
             return fb_ioctl(request, arg);
+        }
+        if (task->fds[fd]->sock) {
+            if (!arg || !syscall_range_valid(arg, sizeof(struct ifreq_k))) return -1;
+            struct ifreq_k *ifr = (struct ifreq_k *)arg;
+            ifr->ifr_name[15] = '\0';
+            struct net_device *dev = netdev_get_by_name(ifr->ifr_name);
+            if (!dev) return -1;
+
+            switch (request) {
+                case 0x8913: // SIOCGIFFLAGS
+                    ifr->ifr_ifru.ifru_flags = (short)dev->flags;
+                    return 0;
+                case 0x8914: // SIOCSIFFLAGS
+                    dev->flags = (uint16_t)ifr->ifr_ifru.ifru_flags;
+                    return 0;
+                case 0x8915: // SIOCGIFADDR
+                    ifr->ifr_ifru.ifru_addr.sin_family = 2; // AF_INET
+                    ifr->ifr_ifru.ifru_addr.sin_port = 0;
+                    ifr->ifr_ifru.ifru_addr.sin_addr = dev->ip;
+                    return 0;
+                case 0x8916: // SIOCSIFADDR
+                    dev->ip = ifr->ifr_ifru.ifru_addr.sin_addr;
+                    return 0;
+                case 0x891b: // SIOCGIFNETMASK
+                    ifr->ifr_ifru.ifru_netmask.sin_family = 2;
+                    ifr->ifr_ifru.ifru_netmask.sin_port = 0;
+                    ifr->ifr_ifru.ifru_netmask.sin_addr = dev->netmask;
+                    return 0;
+                case 0x891c: // SIOCSIFNETMASK
+                    dev->netmask = ifr->ifr_ifru.ifru_netmask.sin_addr;
+                    return 0;
+                case 0x8919: // SIOCGIFBRDADDR
+                    ifr->ifr_ifru.ifru_broadaddr.sin_family = 2;
+                    ifr->ifr_ifru.ifru_broadaddr.sin_port = 0;
+                    ifr->ifr_ifru.ifru_broadaddr.sin_addr = (dev->ip & dev->netmask) | ~dev->netmask;
+                    return 0;
+                case 0x891a: // SIOCSIFBRDADDR
+                    return 0;
+                case 0x8927: // SIOCGIFHWADDR
+                    ifr->ifr_ifru.ifru_hwaddr.sa_family = 1; // ARPHRD_ETHER
+                    for (int i = 0; i < 6; i++) ifr->ifr_ifru.ifru_hwaddr.sa_data[i] = (char)dev->mac[i];
+                    return 0;
+                case 0x8921: // SIOCGIFMTU
+                    ifr->ifr_ifru.ifru_mtu = dev->mtu;
+                    return 0;
+                case 0x8922: // SIOCSIFMTU
+                    dev->mtu = (uint16_t)ifr->ifr_ifru.ifru_mtu;
+                    return 0;
+                default:
+                    return -1;
+            }
         }
     }
     if (!is_console_fd(task, fd)) return -1; // only the console is a tty
@@ -1174,10 +1285,12 @@ static int sys_poll(uint32_t fds, uint32_t nfds, uint32_t timeout_u){
                 rev = CON_POLLNVAL;
             } else {
                 struct file *f = task->fds[fd];
-                if (f->node == NULL && f->pipe == NULL) {
+                if (f->node == NULL && f->pipe == NULL && f->sock == NULL) {
                     // console: input ready iff keys are buffered, output always ready
                     if ((p->events & CON_POLLIN) && keyboard_available() > 0) rev |= CON_POLLIN;
                     if (p->events & CON_POLLOUT) rev |= CON_POLLOUT;
+                } else if (f->sock) {
+                    rev = sock_poll(f->sock, p->events);
                 } else if (f->pipe) {
                     if ((p->events & CON_POLLIN) && f->pipe->count > 0) rev |= CON_POLLIN;
                     if ((p->events & CON_POLLOUT) && f->pipe->count < f->pipe->size) rev |= CON_POLLOUT;
@@ -1192,6 +1305,7 @@ static int sys_poll(uint32_t fds, uint32_t nfds, uint32_t timeout_u){
         }
         if (nready > 0) return nready;
         if (timeout == 0) return 0;
+        netdev_poll_all();
         // PIT runs at 100Hz, so 1 tick = 10ms
         if (timeout > 0 && timer_get_ticks() - start >= (unsigned long)((timeout + 9) / 10)) return 0;
         asm volatile("sti; hlt");
@@ -1267,15 +1381,220 @@ static int sys_utimens(uint32_t path, uint32_t times, uint32_t flags){
     return vfs_utimens((const char*)path, (const long*)times, (int)flags);
 }
 
+
+static int sys_socket_call(uint32_t domain, uint32_t type, uint32_t protocol, uint32_t a4, uint32_t a5, uint32_t a6){
+    (void)a4; (void)a5; (void)a6;
+    task_t *task = scheduler_current_task();
+    if (!task) return -1;
+
+    struct socket *sock = sock_create((int)domain, (int)type, (int)protocol);
+    if (!sock) return -1;
+
+    struct file *f = (struct file *)kmalloc(sizeof(struct file));
+    if (!f) {
+        sock_destroy(sock);
+        return -1;
+    }
+    f->node = NULL;
+    f->offset = 0;
+    f->flags = 0;
+    f->ref_count = 1;
+    f->pipe = NULL;
+    f->pipe_end = 0;
+    f->sock = sock;
+
+    int fd = alloc_fd(task, f);
+    if (fd < 0) {
+        sock_destroy(sock);
+        kfree(f);
+        return -1;
+    }
+    return fd;
+}
+
+static int sys_bind_call(uint32_t fd, uint32_t addr, uint32_t addrlen, uint32_t a4, uint32_t a5, uint32_t a6){
+    (void)a4; (void)a5; (void)a6;
+    if (addr == 0 || !syscall_range_valid(addr, addrlen)) return -1;
+    task_t *task = scheduler_current_task();
+    if (!task || (int)fd < 0 || fd >= MAX_FDS || !task->fds[fd] || !task->fds[fd]->sock) return -1;
+
+    const struct sockaddr_in_k *sin = (const struct sockaddr_in_k *)addr;
+    return sock_bind(task->fds[fd]->sock, sin->sin_addr, net_ntohs(sin->sin_port));
+}
+
+static int sys_connect_call(uint32_t fd, uint32_t addr, uint32_t addrlen, uint32_t a4, uint32_t a5, uint32_t a6){
+    (void)a4; (void)a5; (void)a6;
+    if (addr == 0 || !syscall_range_valid(addr, addrlen)) return -1;
+    task_t *task = scheduler_current_task();
+    if (!task || (int)fd < 0 || fd >= MAX_FDS || !task->fds[fd] || !task->fds[fd]->sock) return -1;
+
+    const struct sockaddr_in_k *sin = (const struct sockaddr_in_k *)addr;
+    return sock_connect(task->fds[fd]->sock, sin->sin_addr, net_ntohs(sin->sin_port));
+}
+
+static int sys_listen_call(uint32_t fd, uint32_t backlog, uint32_t a3, uint32_t a4, uint32_t a5, uint32_t a6){
+    (void)a3; (void)a4; (void)a5; (void)a6;
+    task_t *task = scheduler_current_task();
+    if (!task || (int)fd < 0 || fd >= MAX_FDS || !task->fds[fd] || !task->fds[fd]->sock) return -1;
+    return sock_listen(task->fds[fd]->sock, (int)backlog);
+}
+
+static int sys_accept_call(uint32_t fd, uint32_t addr, uint32_t addrlen_ptr, uint32_t a4, uint32_t a5, uint32_t a6){
+    (void)a4; (void)a5; (void)a6;
+    task_t *task = scheduler_current_task();
+    if (!task || (int)fd < 0 || fd >= MAX_FDS || !task->fds[fd] || !task->fds[fd]->sock) return -1;
+
+    uint32_t client_ip = 0;
+    uint16_t client_port = 0;
+    struct socket *client_sock = sock_accept(task->fds[fd]->sock, &client_ip, &client_port);
+    if (!client_sock) return -1;
+
+    struct file *f = (struct file *)kmalloc(sizeof(struct file));
+    if (!f) {
+        sock_destroy(client_sock);
+        return -1;
+    }
+    f->node = NULL;
+    f->offset = 0;
+    f->flags = 0;
+    f->ref_count = 1;
+    f->pipe = NULL;
+    f->pipe_end = 0;
+    f->sock = client_sock;
+
+    int client_fd = alloc_fd(task, f);
+    if (client_fd < 0) {
+        sock_destroy(client_sock);
+        kfree(f);
+        return -1;
+    }
+
+    if (addr && addrlen_ptr && syscall_range_valid(addr, sizeof(struct sockaddr_in_k)) &&
+        syscall_range_valid(addrlen_ptr, sizeof(uint32_t))) {
+        struct sockaddr_in_k *sin = (struct sockaddr_in_k *)addr;
+        sin->sin_family = AF_INET;
+        sin->sin_port = net_htons(client_port);
+        sin->sin_addr = client_ip;
+        for (int i = 0; i < 8; i++) sin->sin_zero[i] = 0;
+        *(uint32_t *)addrlen_ptr = sizeof(struct sockaddr_in_k);
+    }
+    return client_fd;
+}
+
+static int sys_sendto_call(uint32_t fd, uint32_t buf, uint32_t len, uint32_t flags, uint32_t dest_addr, uint32_t addrlen){
+    if (buf == 0 || !syscall_range_valid(buf, len)) return -1;
+    task_t *task = scheduler_current_task();
+    if (!task || (int)fd < 0 || fd >= MAX_FDS || !task->fds[fd] || !task->fds[fd]->sock) return -1;
+
+    uint32_t dst_ip = 0;
+    uint16_t dst_port = 0;
+    if (dest_addr && addrlen >= sizeof(struct sockaddr_in_k) && syscall_range_valid(dest_addr, sizeof(struct sockaddr_in_k))) {
+        const struct sockaddr_in_k *sin = (const struct sockaddr_in_k *)dest_addr;
+        dst_ip = sin->sin_addr;
+        dst_port = net_ntohs(sin->sin_port);
+    }
+
+    return sock_sendto(task->fds[fd]->sock, (const void *)buf, len, (int)flags, dst_ip, dst_port);
+}
+
+static int sys_recvfrom_call(uint32_t fd, uint32_t buf, uint32_t len, uint32_t flags, uint32_t src_addr, uint32_t addrlen_ptr){
+    if (buf == 0 || !syscall_range_valid(buf, len)) return -1;
+    task_t *task = scheduler_current_task();
+    if (!task || (int)fd < 0 || fd >= MAX_FDS || !task->fds[fd] || !task->fds[fd]->sock) return -1;
+
+    uint32_t from_ip = 0;
+    uint16_t from_port = 0;
+    int ret = sock_recvfrom(task->fds[fd]->sock, (void *)buf, len, (int)flags, &from_ip, &from_port);
+    if (ret >= 0 && src_addr && addrlen_ptr &&
+        syscall_range_valid(src_addr, sizeof(struct sockaddr_in_k)) &&
+        syscall_range_valid(addrlen_ptr, sizeof(uint32_t))) {
+        struct sockaddr_in_k *sin = (struct sockaddr_in_k *)src_addr;
+        sin->sin_family = AF_INET;
+        sin->sin_port = net_htons(from_port);
+        sin->sin_addr = from_ip;
+        for (int i = 0; i < 8; i++) sin->sin_zero[i] = 0;
+        *(uint32_t *)addrlen_ptr = sizeof(struct sockaddr_in_k);
+    }
+    return ret;
+}
+
+static int sys_shutdown_call(uint32_t fd, uint32_t how, uint32_t a3, uint32_t a4, uint32_t a5, uint32_t a6){
+    (void)how; (void)a3; (void)a4; (void)a5; (void)a6;
+    task_t *task = scheduler_current_task();
+    if (!task || (int)fd < 0 || fd >= MAX_FDS || !task->fds[fd] || !task->fds[fd]->sock) return -1;
+    return sock_close(task->fds[fd]->sock);
+}
+
+static int sys_getsockopt_call(uint32_t fd, uint32_t level, uint32_t optname, uint32_t optval, uint32_t optlen, uint32_t a6){
+    (void)level; (void)a6;
+    task_t *task = scheduler_current_task();
+    if (!task || (int)fd < 0 || fd >= MAX_FDS || !task->fds[fd] || !task->fds[fd]->sock) return -1;
+    if (optval && optlen && syscall_range_valid(optval, 4) && syscall_range_valid(optlen, 4)) {
+        if (optname == SO_ERROR) {
+            *(int *)optval = task->fds[fd]->sock->error;
+            task->fds[fd]->sock->error = 0;
+        } else {
+            *(int *)optval = 0;
+        }
+        *(uint32_t *)optlen = 4;
+        return 0;
+    }
+    return 0;
+}
+
+static int sys_setsockopt_call(uint32_t fd, uint32_t level, uint32_t optname, uint32_t optval, uint32_t optlen, uint32_t a6){
+    (void)level; (void)optname; (void)optval; (void)optlen; (void)a6;
+    task_t *task = scheduler_current_task();
+    if (!task || (int)fd < 0 || fd >= MAX_FDS || !task->fds[fd] || !task->fds[fd]->sock) return -1;
+    return 0;
+}
+
+static int sys_getsockname_call(uint32_t fd, uint32_t addr, uint32_t addrlen, uint32_t a4, uint32_t a5, uint32_t a6){
+    (void)a4; (void)a5; (void)a6;
+    task_t *task = scheduler_current_task();
+    if (!task || (int)fd < 0 || fd >= MAX_FDS || !task->fds[fd] || !task->fds[fd]->sock) return -1;
+    if (addr && addrlen && syscall_range_valid(addr, sizeof(struct sockaddr_in_k)) && syscall_range_valid(addrlen, 4)) {
+        struct sockaddr_in_k *sin = (struct sockaddr_in_k *)addr;
+        struct socket *s = task->fds[fd]->sock;
+        sin->sin_family = AF_INET;
+        sin->sin_port = net_htons(s->local_port);
+        sin->sin_addr = s->local_ip;
+        for (int i = 0; i < 8; i++) sin->sin_zero[i] = 0;
+        *(uint32_t *)addrlen = sizeof(struct sockaddr_in_k);
+        return 0;
+    }
+    return -1;
+}
+
+static int sys_getpeername_call(uint32_t fd, uint32_t addr, uint32_t addrlen, uint32_t a4, uint32_t a5, uint32_t a6){
+    (void)a4; (void)a5; (void)a6;
+    task_t *task = scheduler_current_task();
+    if (!task || (int)fd < 0 || fd >= MAX_FDS || !task->fds[fd] || !task->fds[fd]->sock) return -1;
+    if (addr && addrlen && syscall_range_valid(addr, sizeof(struct sockaddr_in_k)) && syscall_range_valid(addrlen, 4)) {
+        struct sockaddr_in_k *sin = (struct sockaddr_in_k *)addr;
+        struct socket *s = task->fds[fd]->sock;
+        sin->sin_family = AF_INET;
+        sin->sin_port = net_htons(s->remote_port);
+        sin->sin_addr = s->remote_ip;
+        for (int i = 0; i < 8; i++) sin->sin_zero[i] = 0;
+        *(uint32_t *)addrlen = sizeof(struct sockaddr_in_k);
+        return 0;
+    }
+    return -1;
+}
+
 struct interrupt_frame *syscall_handler(struct interrupt_frame *frame){
     uint32_t syscall_num = frame->eax;
     uint32_t arg1 = frame->ebx;
     uint32_t arg2 = frame->ecx;
     uint32_t arg3 = frame->edx;
+    uint32_t arg4 = frame->esi;
+    uint32_t arg5 = frame->edi;
+    uint32_t arg6 = frame->ebp;
     current_syscall_frame = frame;
 
     if (syscall_num < SYSCALL_COUNT && syscall_table[syscall_num]) {
-        int ret = syscall_table[syscall_num](arg1, arg2, arg3);
+        int ret = syscall_table[syscall_num](arg1, arg2, arg3, arg4, arg5, arg6);
         if (syscall_num == 7 && ret == -2) {
             frame->eax = syscall_num;
             frame->eip -= 2;

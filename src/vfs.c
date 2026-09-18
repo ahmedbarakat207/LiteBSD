@@ -3,7 +3,7 @@
 #include "include/sched.h"
 #include "include/time.h"
 #include "include/sysinfo.h"
-#include "include/fb.h"
+#include "drivers/include/fb.h"
 
 
 struct vfs_node {
@@ -266,7 +266,8 @@ struct synth_id {
 };
 
 static const char *proc_files[NPROC_FILES] = {
-    "meminfo", "cpuinfo", "uptime", "version", "loadavg", "stat"
+    "meminfo", "cpuinfo", "uptime", "version", "loadavg", "stat",
+    "net/dev", "net/route", "net/arp"
 };
 static const char *pid_files[NPID_FILES] = { "stat", "cmdline" };
 static const char *sys_files[NSYS_FILES] = {
@@ -298,7 +299,7 @@ static int synth_lookup(const char *resolved, struct synth_id *out){
     out->slot = 0;
     if (!resolved || resolved[0] != '/') return SYNTH_NONE;
     // /proc tree
-    if (strings_equal(resolved, "/proc")) {
+    if (strings_equal(resolved, "/proc") || strings_equal(resolved, "/proc/net")) {
         out->kind = SYNTH_PROCDIR;
         return SYNTH_PROCDIR;
     }

@@ -24,7 +24,10 @@ struct task; // task_t, full definition in include/sched.h
 #define PROC_VERSION 3
 #define PROC_LOADAVG 4
 #define PROC_STAT 5
-#define NPROC_FILES 6
+#define PROC_NET_DEV 6
+#define PROC_NET_ROUTE 7
+#define PROC_NET_ARP 8
+#define NPROC_FILES 9
 // /proc/<pid> file slots
 #define PID_STAT 0
 #define PID_CMDLINE 1

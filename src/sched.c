@@ -376,6 +376,9 @@ void release_fd(task_t *task, int fd){
                 kfree(f->pipe->buffer);
                 kfree(f->pipe);
             }
+        } else if (f->sock){
+            extern int sock_close(struct socket *sock);
+            sock_close(f->sock);
         } else if (f->node){
             vfs_close(f->node);
         }

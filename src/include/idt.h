@@ -10,6 +10,8 @@
 
 void idt_init();
 void pic_remap();
+void pic_unmask_irq(unsigned char irq);
+void register_irq_handler(unsigned char irq, void (*handler)(void));
 void outb(unsigned short port, unsigned char data);
 void serial_write(const char *s);
 void serial_write_hex(unsigned int v);

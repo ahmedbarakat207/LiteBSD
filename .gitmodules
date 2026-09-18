@@ -5,3 +5,18 @@
 	path = busybox
 	url = https://github.com/mirror/busybox.git
 	ignore = dirty
+[submodule "src/programs/curl"]
+	path = src/programs/curl
+	url = https://github.com/curl/curl.git
+[submodule "src/programs/net-tools"]
+	path = src/programs/net-tools
+	url = https://github.com/ecki/net-tools.git
+[submodule "src/programs/neofetch"]
+	path = src/programs/neofetch
+	url = https://github.com/dylanaraps/neofetch.git
+[submodule "src/programs/iputils"]
+	path = src/programs/iputils
+	url = https://github.com/iputils/iputils.git
+[submodule "src/programs/procps"]
+	path = src/programs/procps
+	url = https://github.com/procps-ng/procps.git

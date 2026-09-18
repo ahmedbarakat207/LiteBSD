@@ -2,14 +2,14 @@
 #include "include/gdt.h"
 #include "include/paging.h"
 #include "include/idt.h"
-#include "include/keyboard.h"
 #include "include/sched.h"
 #include "include/time.h"
 #include "include/syscall.h"
 #include "include/initrd.h"
 #include "include/multiboot.h"
 #include "include/sysinfo.h"
-#include "include/fb.h"
+#include "include/netstack.h"
+#include "drivers/include/drivers.h"
 
 static void user_init(void){
     println("[USER_INIT] Starting user_init...", VGA_COLOR_LIGHT_CYAN);
@@ -51,7 +51,7 @@ void kernel_main(struct mb_info *info){
     gdt_init();
     idt_init();
     paging_init();
-    fb_init(info);
+    drivers_init_early(info);
     clear();
 
 
@@ -81,10 +81,12 @@ void kernel_main(struct mb_info *info){
     outb(PIC2_DATA, 0xFF); 
 
     set_timer_frequency(100);
-    keyboard_init();
+    drivers_init_input();
 
     println("[KERNEL] Kernel initialized.", VGA_COLOR_GREEN);
-    new_line();
+    netstack_init();
+    drivers_init_devices();
+
     new_line();
     println("Welcome to LiteBSD!!!", VGA_COLOR_WHITE);
 

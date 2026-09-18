@@ -1,9 +1,9 @@
 #include "include/tty.h"
-#include "include/keyboard.h"
+#include "drivers/include/keyboard.h"
 #include "include/heap.h"
 #include "include/sched.h"
 #include "include/idt.h"
-#include "include/fb.h"
+#include "drivers/include/fb.h"
 
 // print rows/columns
 int char_raw = 0;

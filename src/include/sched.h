@@ -9,6 +9,8 @@ struct pipe;
 #define TASK_ZOMBIE 1
 #define TASK_BLOCKED 2 // dad naps till kid execs or dies
 
+struct socket;
+
 struct file {
     struct vfs_node *node;
     unsigned int offset;
@@ -16,6 +18,7 @@ struct file {
     int ref_count;
     struct pipe *pipe;
     int pipe_end;
+    struct socket *sock;
 };
 
 struct pipe {

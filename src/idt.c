@@ -1,6 +1,6 @@
 #include "include/idt.h"
 #include "include/tty.h"
-#include "include/keyboard.h"
+#include "drivers/include/keyboard.h"
 #include "include/sched.h"
 #include "include/time.h"
 #include "include/syscall.h"
@@ -75,13 +75,42 @@ void pic_remap(){
     outb(PIC1_DATA, 0xFF);
     outb(PIC2_DATA, 0xFF);
 }
+
 void outb(unsigned short port, unsigned char data) {
     asm volatile ("outb %0, %1" : : "a"(data), "Nd"(port));
 }
+
 static inline unsigned char inb(unsigned short port) {
     unsigned char ret;
     asm volatile ("inb %1, %0" : "=a"(ret) : "Nd"(port));
     return ret;
+}
+
+static void (*s_irq_handlers[16])(void) = {0};
+
+void pic_unmask_irq(unsigned char irq) {
+    if (irq < 8) {
+        unsigned char mask = inb(PIC1_DATA);
+        mask &= ~(1 << irq);
+        outb(PIC1_DATA, mask);
+    } else if (irq < 16) {
+        // Unmask cascade IRQ 2 on master
+        unsigned char mask1 = inb(PIC1_DATA);
+        mask1 &= ~(1 << 2);
+        outb(PIC1_DATA, mask1);
+
+        // Unmask specific IRQ line on slave
+        unsigned char mask2 = inb(PIC2_DATA);
+        mask2 &= ~(1 << (irq - 8));
+        outb(PIC2_DATA, mask2);
+    }
+}
+
+void register_irq_handler(unsigned char irq, void (*handler)(void)) {
+    if (irq < 16) {
+        s_irq_handlers[irq] = handler;
+        pic_unmask_irq(irq);
+    }
 }
 
 static void serial_init(void) {
@@ -270,6 +299,8 @@ struct interrupt_frame *irq_handler(unsigned int irq_num, struct interrupt_frame
         keyboard_handler();
         // test
         //println("[KEYBOARD] Key pressed.", VGA_COLOR_CYAN);
+    } else if (irq_num < 16 && s_irq_handlers[irq_num]) {
+        s_irq_handlers[irq_num]();
     }
     if (irq_num >= 8){
         outb(PIC2_COMMAND, 0x20);

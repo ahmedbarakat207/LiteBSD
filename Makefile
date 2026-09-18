@@ -13,18 +13,18 @@ SYSLINUX_URL := https://mirrors.edge.kernel.org/pub/linux/utils/boot/syslinux/sy
 SYSLINUX_SRC := $(BUILD_DIR)/syslinux-$(SYSLINUX_VERSION)
 
 CFLAGS := -std=gnu11 -ffreestanding -O2 -Wall -Wextra -m32 \
-	-fno-pie -fno-stack-protector -fno-builtin
+	-fno-pie -fno-stack-protector -fno-builtin \
+	-I src -I src/include -I src/drivers -I src/drivers/include
 LDFLAGS := -m elf_i386 -T linker.ld
 
-# userspace program flags (link against libc)
 UCFLAGS  := -std=gnu11 -O2 -Wall -Wextra -m32 -fno-pie -fno-stack-protector \
 	-I libc/include
 ULDFLAGS := -m elf_i386 --gc-sections -Ttext=0x8000000
-PROGS    := $(BUILD_DIR)/top $(BUILD_DIR)/memstat $(BUILD_DIR)/pcinfo $(BUILD_DIR)/fbtest $(BUILD_DIR)/neofetch
+PROGS    := $(BUILD_DIR)/memstat $(BUILD_DIR)/pcinfo $(BUILD_DIR)/fbtest
 
-.PHONY: all clean iso run-iso syslinux libc busybox initrd run programs
+.PHONY: all clean iso run-iso syslinux libc busybox initrd run programs ifconfig curl
 
-all: $(BUILD_DIR)/$(TARGET) busybox programs initrd
+all: $(BUILD_DIR)/$(TARGET) busybox programs $(BUILD_DIR)/ifconfig $(BUILD_DIR)/curl initrd
 
 libc:
 	@if [ ! -f libc/Makefile ]; then \
@@ -57,17 +57,11 @@ busybox: libc
 
 programs: libc $(PROGS)
 
-$(BUILD_DIR)/top.o: src/programs/top.c | $(BUILD_DIR)
-	$(CC) $(UCFLAGS) -c $< -o $@
-
 $(BUILD_DIR)/memstat.o: src/programs/memstat.c | $(BUILD_DIR)
 	$(CC) $(UCFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/pcinfo.o: src/programs/pcinfo.c | $(BUILD_DIR)
 	$(CC) $(UCFLAGS) -c $< -o $@
-
-$(BUILD_DIR)/top: $(BUILD_DIR)/top.o
-	$(LD) $(ULDFLAGS) libc/build/crt0.o $< libc/build/libc.a -o $@
 
 $(BUILD_DIR)/memstat: $(BUILD_DIR)/memstat.o
 	$(LD) $(ULDFLAGS) libc/build/crt0.o $< libc/build/libc.a -o $@
@@ -81,13 +75,79 @@ $(BUILD_DIR)/fbtest.o: src/programs/fbtest.c | $(BUILD_DIR)
 $(BUILD_DIR)/fbtest: $(BUILD_DIR)/fbtest.o
 	$(LD) $(ULDFLAGS) libc/build/crt0.o $< libc/build/libc.a -o $@
 
-$(BUILD_DIR)/neofetch.o: src/programs/neofetch.c | $(BUILD_DIR)
-	$(CC) $(UCFLAGS) -c $< -o $@
+ifconfig: $(BUILD_DIR)/ifconfig
 
-$(BUILD_DIR)/neofetch: $(BUILD_DIR)/neofetch.o
-	$(LD) $(ULDFLAGS) libc/build/crt0.o $< libc/build/libc.a -o $@
+$(BUILD_DIR)/ifconfig: libc | $(BUILD_DIR)
+	@if [ ! -f src/programs/net-tools/Makefile ]; then \
+		echo "Initializing net-tools submodule..."; \
+		git submodule update --init src/programs/net-tools; \
+	fi
+	$(MAKE) -C src/programs/net-tools/lib CC=$(CC) AR=i686-elf-ar \
+		CFLAGS="-std=gnu11 -O2 -m32 -fno-pie -fno-stack-protector -ffunction-sections -fdata-sections -I$(CURDIR)/libc/include -I$(CURDIR)/src/programs/net-tools/include -I. -I.. -D_GNU_SOURCE"
+	$(CC) -std=gnu11 -O2 -m32 -fno-pie -fno-stack-protector -ffunction-sections -fdata-sections \
+		-I$(CURDIR)/libc/include -I$(CURDIR)/src/programs/net-tools/include -I$(CURDIR)/src/programs/net-tools -I$(CURDIR)/src/programs/net-tools/lib -D_GNU_SOURCE \
+		-c src/programs/net-tools/ifconfig.c -o $(BUILD_DIR)/ifconfig.o
+	$(CC) -m32 -fno-pie -nostdlib libc/build/crt0.o $(BUILD_DIR)/ifconfig.o src/programs/net-tools/lib/libnet-tools.a libc/build/libc.a -lgcc \
+		-Wl,-Ttext=0x8000000 -Wl,--gc-sections -o $@
 
-initrd: busybox programs | $(BUILD_DIR)
+curl: $(BUILD_DIR)/curl
+
+$(BUILD_DIR)/curl: libc | $(BUILD_DIR)
+	@if [ ! -f src/programs/curl/CMakeLists.txt ]; then \
+		echo "Initializing curl submodule..."; \
+		git submodule update --init src/programs/curl; \
+	fi
+	mkdir -p $(BUILD_DIR)/curl_build
+	cd $(BUILD_DIR)/curl_build && \
+	if [ ! -f Makefile ]; then \
+		cmake $(CURDIR)/src/programs/curl \
+			-DCMAKE_SYSTEM_NAME=Generic \
+			-DCMAKE_C_COMPILER=$(CC) \
+			-DCMAKE_C_FLAGS="-std=gnu11 -O2 -m32 -fno-pie -fno-stack-protector -I$(CURDIR)/libc/include" \
+			-DCMAKE_EXE_LINKER_FLAGS="-nostdlib $(CURDIR)/libc/build/crt0.o $(CURDIR)/libc/build/libc.a -lgcc -Wl,-Ttext=0x8000000" \
+			-DBUILD_SHARED_LIBS=OFF \
+			-DBUILD_STATIC_LIBS=ON \
+			-DBUILD_CURL_EXE=ON \
+			-DHTTP_ONLY=ON \
+			-DBUILD_TESTING=OFF \
+			-DBUILD_LIBCURL_DOCS=OFF \
+			-DBUILD_MISC_DOCS=OFF \
+			-DCURL_DISABLE_LDAP=ON \
+			-DCURL_DISABLE_LDAPS=ON \
+			-DCURL_DISABLE_TELNET=ON \
+			-DCURL_DISABLE_DICT=ON \
+			-DCURL_DISABLE_TFTP=ON \
+			-DCURL_DISABLE_POP3=ON \
+			-DCURL_DISABLE_IMAP=ON \
+			-DCURL_DISABLE_SMTP=ON \
+			-DCURL_DISABLE_GOPHER=ON \
+			-DCURL_DISABLE_MQTT=ON \
+			-DCURL_DISABLE_MANUAL=ON \
+			-DCURL_DISABLE_ALTSVC=ON \
+			-DCURL_DISABLE_HSTS=ON \
+			-DCURL_USE_LIBPSL=OFF \
+			-DCURL_USE_LIBSSH2=OFF \
+			-DCURL_USE_GSSAPI=OFF \
+			-DENABLE_IPV6=OFF \
+			-DENABLE_THREADED_RESOLVER=OFF \
+			-DENABLE_UNIX_SOCKETS=OFF \
+			-DCURL_HIDDEN_SYMBOLS=OFF \
+			-DCURL_ENABLE_SSL=OFF; \
+	fi && \
+	$(MAKE) -C lib libcurl_static && \
+	$(MAKE) -C src curltool
+	$(CC) -std=gnu11 -O2 -m32 -fno-pie -fno-stack-protector \
+		-I$(CURDIR)/libc/include -I$(CURDIR)/src/programs/curl/include -I$(CURDIR)/src/programs/curl/src -I$(CURDIR)/src/programs/curl/lib \
+		-I$(CURDIR)/$(BUILD_DIR)/curl_build/lib -I$(CURDIR)/$(BUILD_DIR)/curl_build/src \
+		-DCURL_STATICLIB -DHAVE_CONFIG_H \
+		-c $(CURDIR)/src/programs/curl/src/tool_main.c -o $(BUILD_DIR)/curl_build/src/tool_main.o
+	cd $(BUILD_DIR)/curl_build/src && \
+	$(CC) -std=gnu11 -O2 -m32 -fno-pie -fno-stack-protector -nostdlib $(CURDIR)/libc/build/crt0.o \
+		-Wl,-Ttext=0x8000000 -Wl,--gc-sections tool_main.o \
+		-Wl,--whole-archive libcurltool.a -Wl,--no-whole-archive \
+		-o $(CURDIR)/$@ ../lib/libcurl.a $(CURDIR)/libc/build/libc.a -lgcc
+
+initrd: busybox programs $(BUILD_DIR)/ifconfig $(BUILD_DIR)/curl | $(BUILD_DIR)
 	rm -rf $(BUILD_DIR)/initrd
 	mkdir -p $(BUILD_DIR)/initrd/bin $(BUILD_DIR)/initrd/sbin $(BUILD_DIR)/initrd/etc
 	mkdir -p $(BUILD_DIR)/initrd/usr/bin $(BUILD_DIR)/initrd/usr/sbin $(BUILD_DIR)/initrd/usr/lib
@@ -96,17 +156,22 @@ initrd: busybox programs | $(BUILD_DIR)
 	chmod 1777 $(BUILD_DIR)/initrd/tmp
 	cp busybox/busybox $(BUILD_DIR)/initrd/bin/busybox
 	ln $(BUILD_DIR)/initrd/bin/busybox $(BUILD_DIR)/initrd/bin/sh 2>/dev/null || cp busybox/busybox $(BUILD_DIR)/initrd/bin/sh
-	for applet in bash ls cat echo pwd clear mkdir rmdir kill sleep test true false printf vi uname cp mv rm ln touch readlink realpath truncate stat free ps uptime hostname fbset; do \
+	for applet in bash ls cat echo pwd clear mkdir rmdir kill sleep test true false printf vi uname cp mv rm ln touch readlink realpath truncate stat free ps uptime hostname fbset ping top; do \
 		ln $(BUILD_DIR)/initrd/bin/busybox $(BUILD_DIR)/initrd/bin/$$applet 2>/dev/null || cp $(BUILD_DIR)/initrd/bin/busybox $(BUILD_DIR)/initrd/bin/$$applet; \
 		ln $(BUILD_DIR)/initrd/bin/busybox $(BUILD_DIR)/initrd/usr/bin/$$applet 2>/dev/null || true; \
 	done
 	ln $(BUILD_DIR)/initrd/bin/busybox $(BUILD_DIR)/initrd/sbin/busybox 2>/dev/null || true
-	# native programs: top, memstat, pcinfo, fbtest, neofetch
-	cp $(BUILD_DIR)/top      $(BUILD_DIR)/initrd/bin/top
+	# authentic programs: memstat, pcinfo, fbtest, ifconfig (net-tools), curl (curl/curl), neofetch
 	cp $(BUILD_DIR)/memstat  $(BUILD_DIR)/initrd/bin/memstat
 	cp $(BUILD_DIR)/pcinfo   $(BUILD_DIR)/initrd/bin/pcinfo
 	cp $(BUILD_DIR)/fbtest   $(BUILD_DIR)/initrd/bin/fbtest
-	cp $(BUILD_DIR)/neofetch $(BUILD_DIR)/initrd/bin/neofetch
+	cp $(BUILD_DIR)/ifconfig $(BUILD_DIR)/initrd/bin/ifconfig
+	ln $(BUILD_DIR)/initrd/bin/ifconfig $(BUILD_DIR)/initrd/sbin/ifconfig 2>/dev/null || true
+	cp $(BUILD_DIR)/curl     $(BUILD_DIR)/initrd/bin/curl
+	cp src/programs/neofetch/neofetch     $(BUILD_DIR)/initrd/bin/neofetch
+	chmod +x $(BUILD_DIR)/initrd/bin/neofetch
+	echo "nameserver 10.0.2.3" > $(BUILD_DIR)/initrd/etc/resolv.conf
+	printf "127.0.0.1\tlocalhost\n10.0.2.15\tlitebsd\n" > $(BUILD_DIR)/initrd/etc/hosts
 	echo "root:x:0:0:root:/root:/bin/sh" > $(BUILD_DIR)/initrd/etc/passwd
 	echo "daemon:x:1:1:daemon:/usr/sbin:/bin/sh" >> $(BUILD_DIR)/initrd/etc/passwd
 	echo "nobody:x:65534:65534:nobody:/nonexistent:/bin/false" >> $(BUILD_DIR)/initrd/etc/passwd
@@ -123,9 +188,10 @@ initrd: busybox programs | $(BUILD_DIR)
 	touch $(BUILD_DIR)/initrd/dev/null $(BUILD_DIR)/initrd/dev/zero $(BUILD_DIR)/initrd/dev/tty $(BUILD_DIR)/initrd/dev/console $(BUILD_DIR)/initrd/dev/fb0
 	cd $(BUILD_DIR)/initrd && tar -cf ../initrd.tar --format=ustar .
 
+NIC ?= e1000
 
 run: all
-	qemu-system-i386 -m 512M -kernel $(BUILD_DIR)/$(TARGET) -initrd $(BUILD_DIR)/initrd.tar
+	qemu-system-i386 -m 512M -kernel $(BUILD_DIR)/$(TARGET) -initrd $(BUILD_DIR)/initrd.tar -nic model=$(NIC)
 
 $(BUILD_DIR):
 	mkdir -p $@
@@ -133,7 +199,10 @@ $(BUILD_DIR):
 $(BUILD_DIR)/boot.o: src/boot.asm | $(BUILD_DIR)
 	$(NASM) -f elf32 $< -o $@
 
-$(BUILD_DIR)/kernel.o: src/kernel.c src/include/tty.h src/include/paging.h src/tty.c src/paging.c | $(BUILD_DIR)
+$(BUILD_DIR)/kernel.o: src/kernel.c src/include/tty.h src/include/paging.h src/drivers/include/drivers.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/drivers.o: src/drivers/drivers.c src/drivers/include/drivers.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/tty.o: src/tty.c src/include/tty.h | $(BUILD_DIR)
@@ -148,7 +217,7 @@ $(BUILD_DIR)/gdt.o: src/gdt.c src/include/gdt.h src/include/tty.h | $(BUILD_DIR)
 $(BUILD_DIR)/idt.o: src/idt.c src/include/idt.h src/include/tty.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/keyboard.o: src/keyboard.c src/include/keyboard.h src/include/tty.h | $(BUILD_DIR)
+$(BUILD_DIR)/keyboard.o: src/drivers/keyboard.c src/drivers/include/keyboard.h src/include/tty.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/heap.o: src/heap.c src/include/heap.h src/include/tty.h | $(BUILD_DIR)
@@ -163,7 +232,7 @@ $(BUILD_DIR)/vfs.o: src/vfs.c src/include/vfs.h src/include/heap.h | $(BUILD_DIR
 $(BUILD_DIR)/sched.o: src/sched.c src/include/sched.h src/include/tty.h src/include/idt.h src/include/heap.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/syscall.o: src/syscall.c src/include/syscall.h src/include/tty.h src/include/keyboard.h src/include/sched.h src/include/idt.h src/include/vfs.h | $(BUILD_DIR)
+$(BUILD_DIR)/syscall.o: src/syscall.c src/include/syscall.h src/include/tty.h src/drivers/include/keyboard.h src/include/sched.h src/include/idt.h src/include/vfs.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/initrd.o: src/initrd.c src/include/initrd.h src/include/vfs.h src/include/tty.h src/include/heap.h | $(BUILD_DIR)
@@ -172,11 +241,39 @@ $(BUILD_DIR)/initrd.o: src/initrd.c src/include/initrd.h src/include/vfs.h src/i
 $(BUILD_DIR)/sysinfo.o: src/sysinfo.c src/include/sysinfo.h src/include/heap.h src/include/time.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/fb.o: src/fb.c src/include/fb.h src/include/font.h src/include/tty.h src/include/multiboot.h | $(BUILD_DIR)
+$(BUILD_DIR)/fb.o: src/drivers/fb.c src/drivers/include/fb.h src/drivers/include/font.h src/include/tty.h src/include/multiboot.h | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/$(TARGET): $(BUILD_DIR)/boot.o $(BUILD_DIR)/kernel.o $(BUILD_DIR)/fb.o $(BUILD_DIR)/tty.o $(BUILD_DIR)/paging.o $(BUILD_DIR)/gdt.o $(BUILD_DIR)/idt.o $(BUILD_DIR)/keyboard.o $(BUILD_DIR)/heap.o $(BUILD_DIR)/time.o $(BUILD_DIR)/vfs.o $(BUILD_DIR)/sched.o $(BUILD_DIR)/syscall.o $(BUILD_DIR)/initrd.o $(BUILD_DIR)/sysinfo.o linker.ld
-	$(LD) $(LDFLAGS) -o $@ $(BUILD_DIR)/boot.o $(BUILD_DIR)/kernel.o $(BUILD_DIR)/fb.o $(BUILD_DIR)/tty.o $(BUILD_DIR)/paging.o $(BUILD_DIR)/gdt.o $(BUILD_DIR)/idt.o $(BUILD_DIR)/keyboard.o $(BUILD_DIR)/heap.o $(BUILD_DIR)/time.o $(BUILD_DIR)/vfs.o $(BUILD_DIR)/sched.o $(BUILD_DIR)/syscall.o $(BUILD_DIR)/initrd.o $(BUILD_DIR)/sysinfo.o
+$(BUILD_DIR)/pci.o: src/drivers/pci.c src/drivers/include/pci.h src/include/io.h src/include/tty.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/netdev.o: src/drivers/netdev.c src/drivers/include/netdev.h src/include/heap.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/e1000.o: src/drivers/e1000.c src/drivers/include/e1000.h src/drivers/include/pci.h src/drivers/include/netdev.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/ne2k.o: src/drivers/ne2k.c src/drivers/include/ne2k.h src/drivers/include/pci.h src/drivers/include/netdev.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/rtl8139.o: src/drivers/rtl8139.c src/drivers/include/rtl8139.h src/drivers/include/pci.h src/drivers/include/netdev.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/netstack.o: src/netstack.c src/include/netstack.h src/drivers/include/netdev.h src/include/socket.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/socket.o: src/socket.c src/include/socket.h src/include/netstack.h src/drivers/include/netdev.h | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+KERNEL_OBJS := $(BUILD_DIR)/boot.o $(BUILD_DIR)/kernel.o $(BUILD_DIR)/drivers.o $(BUILD_DIR)/fb.o $(BUILD_DIR)/tty.o \
+               $(BUILD_DIR)/paging.o $(BUILD_DIR)/gdt.o $(BUILD_DIR)/idt.o $(BUILD_DIR)/keyboard.o \
+               $(BUILD_DIR)/heap.o $(BUILD_DIR)/time.o $(BUILD_DIR)/vfs.o $(BUILD_DIR)/sched.o \
+               $(BUILD_DIR)/syscall.o $(BUILD_DIR)/initrd.o $(BUILD_DIR)/sysinfo.o \
+               $(BUILD_DIR)/pci.o $(BUILD_DIR)/netdev.o $(BUILD_DIR)/e1000.o $(BUILD_DIR)/ne2k.o \
+               $(BUILD_DIR)/rtl8139.o $(BUILD_DIR)/netstack.o $(BUILD_DIR)/socket.o
+
+$(BUILD_DIR)/$(TARGET): $(KERNEL_OBJS) linker.ld
+	$(LD) $(LDFLAGS) -o $@ $(KERNEL_OBJS)
 
 
 syslinux: $(SYSLINUX_SRC)/bios/core/isolinux.bin

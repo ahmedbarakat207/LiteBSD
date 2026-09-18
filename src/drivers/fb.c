@@ -1,5 +1,5 @@
-#include "include/fb.h"
-#include "include/font.h"
+#include "drivers/include/fb.h"
+#include "drivers/include/font.h"
 #include "include/tty.h"
 #include <stdint.h>
 

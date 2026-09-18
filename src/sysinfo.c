@@ -2,6 +2,7 @@
 #include "include/heap.h"
 #include "include/time.h"
 #include "include/sched.h"
+#include "drivers/include/netdev.h"
 #include <stdint.h>
 
 static unsigned int mem_total_kb;
@@ -319,6 +320,58 @@ int proc_gen_file(int slot, char *buf, unsigned int cap){
         ob_puts(&o, " 0 0 0 0 0 0\nbtime 0\nprocesses ");
         ob_putu(&o, (unsigned long)sched_task_count());
         ob_putc(&o, '\n');
+        break;
+    }
+    case PROC_NET_DEV: {
+        ob_puts(&o, "Inter-|   Receive                                                |  Transmit\n"
+                    " face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n");
+        int count = netdev_get_count();
+        for (int i = 0; i < count; i++) {
+            struct net_device *d = netdev_get_by_index(i);
+            if (!d) continue;
+            ob_puts(&o, "  ");
+            ob_puts(&o, d->name);
+            ob_puts(&o, ": ");
+            ob_putu(&o, d->rx_bytes);
+            ob_putc(&o, ' ');
+            ob_putu(&o, d->rx_packets);
+            ob_puts(&o, " 0 0 0 0 0 0 ");
+            ob_putu(&o, d->tx_bytes);
+            ob_putc(&o, ' ');
+            ob_putu(&o, d->tx_packets);
+            ob_puts(&o, " 0 0 0 0 0 0\n");
+        }
+        break;
+    }
+    case PROC_NET_ROUTE: {
+        ob_puts(&o, "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n");
+        struct net_device *d = netdev_get_default();
+        if (d && d->gateway) {
+            ob_puts(&o, d->name);
+            ob_puts(&o, "\t00000000\t");
+            const char *h = "0123456789ABCDEF";
+            for (int b = 0; b < 4; b++) {
+                uint8_t byte = (d->gateway >> (b * 8)) & 0xFF;
+                ob_putc(&o, h[(byte >> 4) & 0xF]);
+                ob_putc(&o, h[byte & 0xF]);
+            }
+            ob_puts(&o, "\t0003\t0\t0\t0\t00000000\t0\t0\t0\n");
+        }
+        break;
+    }
+    case PROC_NET_ARP: {
+        ob_puts(&o, "IP address       HW type     Flags       HW address            Mask     Device\n");
+        struct net_device *d = netdev_get_default();
+        if (d && d->gateway) {
+            uint8_t *gw = (uint8_t *)&d->gateway;
+            for (int b = 0; b < 4; b++) {
+                ob_putu(&o, gw[b]);
+                if (b < 3) ob_putc(&o, '.');
+            }
+            ob_puts(&o, "  0x1         0x2         52:54:00:12:34:02     *        ");
+            ob_puts(&o, d->name);
+            ob_puts(&o, "\n");
+        }
         break;
     }
     default:
