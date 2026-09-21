@@ -29,6 +29,7 @@ struct pipe {
     unsigned int count;
     int read_ref;
     int write_ref;
+    int nonblocking; // set via FIONBIO ioctl
 };
 
 typedef struct task {

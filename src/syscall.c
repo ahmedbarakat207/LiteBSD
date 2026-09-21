@@ -176,6 +176,7 @@ static int sys_write(uint32_t fd, uint32_t buffer, uint32_t count){
         uint32_t written = 0;
         while (written < count) {
             if (p->count >= p->size) {
+                if (p->nonblocking) break;
                 asm volatile("sti; hlt");
                 continue;
             }
@@ -184,6 +185,7 @@ static int sys_write(uint32_t fd, uint32_t buffer, uint32_t count){
             p->count++;
             written++;
         }
+        if (written == 0 && count > 0) return -35; // EAGAIN
         return (int)written;
     }
     if (f->node) {
@@ -330,6 +332,7 @@ static int sys_read(uint32_t fd, uint32_t buffer, uint32_t count){
         while (read_count < count) {
             if (p->count == 0) {
                 if (p->write_ref <= 0) break;
+                if (p->nonblocking) break;
                 asm volatile("sti; hlt");
                 continue;
             }
@@ -338,6 +341,7 @@ static int sys_read(uint32_t fd, uint32_t buffer, uint32_t count){
             p->count--;
             read_count++;
         }
+        if (read_count == 0 && p->write_ref > 0) return -35; // EAGAIN
         return (int)read_count;
     }
     if (f->node) {
@@ -882,6 +886,7 @@ static int sys_pipe(uint32_t fds, uint32_t unused1, uint32_t unused2){
     p->count = 0;
     p->read_ref = 1;
     p->write_ref = 1;
+    p->nonblocking = 0;
 
     struct file *read_file = (struct file*)kmalloc(sizeof(struct file));
     struct file *write_file = (struct file*)kmalloc(sizeof(struct file));
@@ -1004,7 +1009,48 @@ static int sys_ioctl(uint32_t fd, uint32_t request, uint32_t arg){
         if (task->fds[fd]->node && vfs_is_fb0(task->fds[fd]->node)) {
             return fb_ioctl(request, arg);
         }
+        if (request == 0x5421) { // FIONBIO: set nonblocking mode (pipes/sockets)
+            if (!arg || !syscall_range_valid(arg, sizeof(int))) return -1;
+            int nb = (*(int *)arg != 0);
+            if (task->fds[fd]->sock) task->fds[fd]->sock->nonblocking = nb;
+            else if (task->fds[fd]->pipe) task->fds[fd]->pipe->nonblocking = nb;
+            else return -1;
+            return 0;
+        }
         if (task->fds[fd]->sock) {
+            if (request == 0x8912) { // SIOCGIFCONF: enumerate interfaces
+                // arg = { int len; char *buf }, filled with 32-byte
+                // name + sockaddr entries (matches libc struct ifreq).
+                if (!arg || !syscall_range_valid(arg, 8)) return -1;
+                int max_len = *(int *)arg;
+                uint32_t user_buf = *(uint32_t *)(arg + 4);
+                if (max_len < 0) max_len = 0;
+                int used = 0;
+                int count = netdev_get_count();
+                for (int i = 0; i < count; i++) {
+                    struct net_device *d = netdev_get_by_index(i);
+                    if (!d) continue;
+                    if (used + 32 <= max_len && user_buf &&
+                        syscall_range_valid(user_buf + used, 32)) {
+                        char *e = (char *)(user_buf + used);
+                        for (int k = 0; k < 16; k++) e[k] = '\0';
+                        int n = 0;
+                        while (n < 15 && d->name[n]) { e[n] = d->name[n]; n++; }
+                        e[n] = '\0';
+                        // sockaddr_in: family, port, addr (network order)
+                        e[16] = 2; e[17] = 0; // AF_INET
+                        e[18] = 0; e[19] = 0; // port
+                        e[20] = (char)(d->ip & 0xFF);
+                        e[21] = (char)((d->ip >> 8) & 0xFF);
+                        e[22] = (char)((d->ip >> 16) & 0xFF);
+                        e[23] = (char)((d->ip >> 24) & 0xFF);
+                        for (int k = 24; k < 32; k++) e[k] = '\0';
+                    }
+                    used += 32;
+                }
+                *(int *)arg = used;
+                return 0;
+            }
             if (!arg || !syscall_range_valid(arg, sizeof(struct ifreq_k))) return -1;
             struct ifreq_k *ifr = (struct ifreq_k *)arg;
             ifr->ifr_name[15] = '\0';

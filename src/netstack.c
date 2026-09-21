@@ -85,7 +85,7 @@ int arp_resolve(struct net_device *dev, uint32_t target_ip, uint8_t *out_mac) {
 
     ethernet_send(dev, s_bcast_mac, ETHERTYPE_ARP, &arp, sizeof(arp));
 
-    for (int retry = 0; retry < 50; retry++) {
+    for (int retry = 0; retry < 200; retry++) {
         if (dev->poll) dev->poll(dev);
         for (int i = 0; i < ARP_TABLE_SIZE; i++) {
             if (s_arp_table[i].valid && s_arp_table[i].ip == target_ip) {
@@ -96,13 +96,9 @@ int arp_resolve(struct net_device *dev, uint32_t target_ip, uint8_t *out_mac) {
         for (volatile int d = 0; d < 10000; d++) asm volatile("pause");
     }
 
-    if ((target_ip & 0x00FFFFFF) == (dev->ip & 0x00FFFFFF)) {
-        out_mac[0] = 0x52; out_mac[1] = 0x54; out_mac[2] = 0x00;
-        out_mac[3] = 0x12; out_mac[4] = 0x34; out_mac[5] = (target_ip >> 24) & 0xFF;
-        arp_add_entry(target_ip, out_mac);
-        return 1;
-    }
-
+    // No fabricated fallback: a wrong MAC poisons the cache and breaks
+    // the interface until reboot. Fail so the next packet re-ARPs fresh
+    // (a late reply gets cached by arp_rx and heals automatically).
     return 0;
 }
 

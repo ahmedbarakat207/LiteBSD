@@ -195,10 +195,17 @@ initrd: busybox programs $(BUILD_DIR)/ifconfig $(BUILD_DIR)/curl | $(BUILD_DIR)
 	touch $(BUILD_DIR)/initrd/dev/null $(BUILD_DIR)/initrd/dev/zero $(BUILD_DIR)/initrd/dev/tty $(BUILD_DIR)/initrd/dev/console $(BUILD_DIR)/initrd/dev/fb0
 	cd $(BUILD_DIR)/initrd && tar -cf ../initrd.tar --format=ustar .
 
+# Networking: QEMU user-mode NAT (10.0.2.0/24). The stack expects
+# eth0=10.0.2.15, gateway 10.0.2.2, DNS 10.0.2.3 (see drivers/*).
+# Override the emulated card with NIC=rtl8139 or NIC=ne2k.
 NIC ?= e1000
+QEMU_NET ?= user,model=$(NIC)
 
-run: all
-	qemu-system-i386 -m 512M -kernel $(BUILD_DIR)/$(TARGET) -initrd $(BUILD_DIR)/initrd.tar -nic model=$(NIC)
+# NOTE: boot the ISO, not -kernel/-initrd directly: QEMU's multiboot
+# loader cannot satisfy the kernel's VBE video request
+# ("multiboot knows VBE. we don't"); SeaBIOS on the ISO provides VBE.
+run: iso
+	qemu-system-i386 -m 512M -cdrom $(BUILD_DIR)/$(TARGET).iso -nic $(QEMU_NET)
 
 $(BUILD_DIR):
 	mkdir -p $@
@@ -346,7 +353,7 @@ iso: $(BUILD_DIR)/$(TARGET) initrd
 		$(ISO_DIR)
 
 run-iso: iso
-	qemu-system-i386 -m 512M -cdrom $(BUILD_DIR)/$(TARGET).iso
+	qemu-system-i386 -m 512M -cdrom $(BUILD_DIR)/$(TARGET).iso -nic $(QEMU_NET)
 
 clean:
 	rm -rf $(BUILD_DIR)

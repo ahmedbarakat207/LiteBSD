@@ -207,7 +207,7 @@ int sock_connect(struct socket *sock, uint32_t ip, uint16_t port) {
     while (sock->tcp_state != TCP_STATE_ESTABLISHED && timeout_ms > 0) {
         netdev_poll_all();
         if (sock->tcp_state == TCP_STATE_ESTABLISHED) break;
-        if (sock->error) return -1;
+        if (sock->error) return -sock->error;
         if (timeout_ms == 2000 && sock->tcp_state == TCP_STATE_SYN_SENT) {
             tcp_send_packet(sock, TCP_FLAG_SYN, 0, 0);
         }
@@ -218,7 +218,7 @@ int sock_connect(struct socket *sock, uint32_t ip, uint16_t port) {
     if (sock->tcp_state != TCP_STATE_ESTABLISHED) {
         sock->tcp_state = TCP_STATE_CLOSED;
         sock->error = 110; // ETIMEDOUT
-        return -1;
+        return -110;
     }
 
     return 0;
@@ -287,14 +287,14 @@ int sock_recvfrom(struct socket *sock, void *buf, size_t len, int flags, uint32_
             if (sock->rx_count > 0) break;
             if (sock->fin_received) return 0; // EOF
             if (sock->tcp_state == TCP_STATE_CLOSED) return 0;
-            if (sock->nonblocking) return -1;
+            if (sock->nonblocking) return -35; // EAGAIN
             for (int j = 0; j < 1000; j++) io_wait();
             timeout_ms--;
         }
 
         if (sock->rx_count == 0) {
             if (sock->fin_received) return 0;
-            return -1; // Timeout / would block
+            return -35; // EAGAIN (timeout)
         }
 
         uint32_t to_copy = (len < sock->rx_count) ? (uint32_t)len : sock->rx_count;
@@ -310,12 +310,12 @@ int sock_recvfrom(struct socket *sock, void *buf, size_t len, int flags, uint32_
         while (sock->dgram_count == 0 && timeout_ms > 0) {
             netdev_poll_all();
             if (sock->dgram_count > 0) break;
-            if (sock->nonblocking) return -1;
+            if (sock->nonblocking) return -35; // EAGAIN
             for (int j = 0; j < 1000; j++) io_wait();
             timeout_ms--;
         }
 
-        if (sock->dgram_count == 0) return -1;
+        if (sock->dgram_count == 0) return -35; // EAGAIN (timeout)
 
         struct dgram_packet *pkt = &sock->dgram_queue[sock->dgram_head];
         uint32_t to_copy = (len < pkt->len) ? (uint32_t)len : pkt->len;
